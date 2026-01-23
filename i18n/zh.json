@@ -85,12 +85,14 @@
       "option1": "更新配置",
       "option2": "分流管理",
       "option3": "SNI 配置管理",
-      "option4": "开/关 geodata 自动更新",
-      "option5": "设置语言",
+      "option4": "修改 Xray 端口",
+      "option5": "开/关 geodata 自动更新",
+      "option6": "设置语言",
       "info1": "更新配置功能为整个配置的更新",
       "info2": "管理屏蔽或 WARP 分流",
       "info3": "包含 Nginx 更新，修改域名，修改 Web 配置等",
-      "info4": "geodata 由 https://github.com/Loyalsoldier/v2ray-rules-dat  提供"
+      "info4": "(非 SNI 配置) 修改 Xray 监听端口，并自动重启服务",
+      "info5": "geodata 由 https://github.com/Loyalsoldier/v2ray-rules-dat  提供"
     },
     "route_management": {
       "title": "自定义分流",
@@ -113,10 +115,11 @@
       "title": "SNI 配置",
       "option1": "修改默认域名",
       "option2": "修改 CDN 域名",
-      "option3": "更新 nginx",
-      "option4": "开/关 nginx 自动更新",
-      "option5": "修改 Web 配置",
-      "option6": "重置 Cloudreve v3 版管理员数据",
+      "option3": "强制续签所有证书",
+      "option4": "更新 nginx",
+      "option5": "开/关 nginx 自动更新",
+      "option6": "修改 Web 配置",
+      "option7": "重置 Cloudreve v3 版管理员数据",
       "info1": "Reality 对应的域名",
       "info2": "套用 CDN 的域名"
     }
@@ -154,6 +157,7 @@
     "seed": "请输入 seed (默认自动生成): ",
     "password": "请输入 password (默认自动生成): ",
     "target": "请输入目标域名 target (默认随机选择): ",
+    "only_change_domain": "仅更新域名 [Y/n]: ",
     "domain": "请输入网站域名 (供 Reality 使用): ",
     "cdn": "请输入网站域名 (供 CDN 使用): ",
     "email": "请输入用于注册 ZeroSSL 的邮箱: ",
