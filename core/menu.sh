@@ -280,6 +280,8 @@ function menu_config() {
     echo -e "${GREEN}4.${NC} $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.config_management.option4")"
     # 打印选项 5
     echo -e "${GREEN}5.${NC} $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.config_management.option5")"
+    # 打印选项 6
+    echo -e "${GREEN}6.${NC} $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.config_management.option6")"
 
     # 打印分隔线
     echo -e "------------------------------------------------------"
@@ -291,6 +293,8 @@ function menu_config() {
     echo -e "3. $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.config_management.info3")"
     # 打印选项 4 的说明信息
     echo -e "4. $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.config_management.info4")"
+    # 打印选项 5 的说明信息
+    echo -e "5. $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.config_management.info5")"
     # 打印分隔线
     echo -e "------------------------------------------------------"
 }
@@ -358,6 +362,8 @@ function menu_sni_config() {
     echo -e "${GREEN}5.${NC} $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.sni_config.option5")"
     # 打印选项 6
     echo -e "${GREEN}6.${NC} $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.sni_config.option6")"
+    # 打印选项 7
+    echo -e "${GREEN}7.${NC} $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.sni_config.option7")"
 
     # 打印分隔线
     echo -e "------------------------------------------------------"
