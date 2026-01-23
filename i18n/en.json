@@ -85,12 +85,14 @@
       "option1": "Update Configuration",
       "option2": "Route Management",
       "option3": "SNI Configuration",
-      "option4": "Enable/Disable geodata auto-update",
-      "option5": "Language",
+      "option4": "Change Xray Port",
+      "option5": "Enable/Disable geodata auto-update",
+      "option6": "Language",
       "info1": "Full config update",
       "info2": "Manage blocking or WARP routing",
       "info3": "Includes Nginx update, domain change, web config",
-      "info4": "geodata provided by  https://github.com/Loyalsoldier/v2ray-rules-dat "
+      "info4": "(Non-SNI) Change Xray listen port and restart service",
+      "info5": "geodata provided by  https://github.com/Loyalsoldier/v2ray-rules-dat "
     },
     "route_management": {
       "title": "Custom Routing",
@@ -113,10 +115,11 @@
       "title": "SNI Configuration",
       "option1": "Change default domain",
       "option2": "Change CDN domain",
-      "option3": "Update nginx",
-      "option4": "Enable/Disable nginx auto-update",
-      "option5": "Modify web config",
-      "option6": "Reset Cloudreve v3 admin data",
+      "option3": "Force certificates renew",
+      "option4": "Update nginx",
+      "option5": "Enable/Disable nginx auto-update",
+      "option6": "Modify web config",
+      "option7": "Reset Cloudreve v3 admin data",
       "info1": "Domain for REALITY",
       "info2": "Domain for CDN"
     }
@@ -154,6 +157,7 @@
     "seed": "Enter seed (default auto-generated): ",
     "password": "Enter password (default auto-generated): ",
     "target": "Enter target domain (default random): ",
+    "only_change_domain": "Only change domain [Y/n]: ",
     "domain": "Enter website domain (for Reality): ",
     "cdn": "Enter website domain (for CDN): ",
     "email": "Enter email for ZeroSSL registration: ",
