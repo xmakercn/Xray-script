@@ -136,6 +136,7 @@ declare -A param_map=(
     ["--seed"]="config,seed"
     ["--password"]="config,password"
     ["--target"]="config,target"
+    ["--only-change-domain"]="config,only_change_domain"
     ["--domain"]="config,domain"
     ["--cdn"]="config,cdn"
     ["--email"]="config,email"
