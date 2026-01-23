@@ -264,6 +264,10 @@ function exec_read() {
             # 验证目标域名
             exec_check '--domain' "${result}" || continue
             ;;
+        only-change-domain)
+            # 为仅更新域名选项设置默认值 'Y'
+            result="${result:-Y}"
+            ;;
         domain | cdn)
             # 验证域名或 CDN 域名
             exec_check '--dns' "${result}" || continue
@@ -712,7 +716,7 @@ function handler_xray_config() {
         [[ "${XRAY_RULES_AD}" -eq 1 ]] && add_rule "ad-domain" "domain" "geosite:category-ads-all" "block"
         ;;
     esac
-	# 处理 WARP 状态
+    # 处理 WARP 状态
     if [[ ${WARP_STATUS} -eq 1 ]]; then
         # 获取 WARP 容器 IP
         local container_ip="$(exec_docker '--obtain-container-ip')"
@@ -853,6 +857,39 @@ function handler_xray_version() {
     esac
     # 更新脚本配置中的 Xray 版本
     SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --arg xray "${CONFIG_DATA['version']}" '.xray.version = $xray')"
+    # 将更新后的脚本配置写入文件
+    echo "${SCRIPT_CONFIG}" >"${SCRIPT_CONFIG_PATH}" && sleep 2
+}
+
+# =============================================================================
+# 函数名称: handler_change_xray_port
+# 功能描述: 修改 Xray 端口配置。
+# 参数: 无
+# 返回值: 无 (直接修改 SCRIPT_CONFIG 全局变量)
+# =============================================================================
+function handler_change_xray_port() {
+    # 默认端口
+    local XRAY_PORT="443"
+    # 获取配置标签
+    local CONFIG_TAG="$(echo "${SCRIPT_CONFIG}" | jq -r '.xray.tag')"
+
+    # 读取端口
+    exec_read 'port'
+
+    # 根据配置标签处理端口
+    case "${CONFIG_TAG,,}" in
+    mkcp)
+        # 输入为空，则默认为 mKCP 生成随机端口
+        XRAY_PORT="${CONFIG_DATA['port']:-$(exec_generate '--port')}"
+        ;;
+    *)
+        # 输入为空，则使用默认端口
+        XRAY_PORT="${CONFIG_DATA['port']:-${XRAY_PORT}}"
+        ;;
+    esac
+
+    # 更新脚本配置中的 Xray 端口
+    SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --argjson port "${XRAY_PORT}" '.xray.port = $port')"
     # 将更新后的脚本配置写入文件
     echo "${SCRIPT_CONFIG}" >"${SCRIPT_CONFIG_PATH}" && sleep 2
 }
@@ -1287,14 +1324,15 @@ function handler_change_domain() {
     local old_domain="$(echo "${SCRIPT_CONFIG}" | jq -r --arg key "${target_domain}" '.nginx[$key]')"
     # 如果 CONFIG_DATA 中没有新域名，且 stop_cert_service 为 "y"，则读取用户输入
     if [[ -z "${CONFIG_DATA["${target_domain}"]}" && "${stop_cert_service}" == "y" ]]; then
+        [[ "${old_domain}" ]] && exec_read 'only-change-domain'
         exec_read "${target_domain}"
     else
         CONFIG_DATA["${target_domain}"]="${old_domain}"
     fi
-    # 如果旧域名存在
-    if [[ -n "${old_domain}" && "${stop_cert_service}" == "y" ]] && exec_ssl '--status' --domain=${old_domain}; then
-        # 停止旧域名的证书续签
-        exec_ssl '--stop-renew' --domain=${old_domain}
+    # 备份旧域名的 Nginx 配置文件
+    [[ -e ${NGINX_CONFIG_DIR}/modules-enabled/stream.conf ]] && cp -f ${NGINX_CONFIG_DIR}/modules-enabled/stream.conf ${SCRIPT_CONFIG_DIR}/stream.conf
+    if [[ -e ${NGINX_CONFIG_DIR}/sites-available/${old_domain}.conf ]]; then
+        cp -f ${NGINX_CONFIG_DIR}/sites-available/${old_domain}.conf ${SCRIPT_CONFIG_DIR}/${old_domain}.conf
         # 删除旧域名的 Nginx 配置文件
         rm -rf ${NGINX_CONFIG_DIR}/sites-{available,enabled}/${old_domain}.conf
     fi
@@ -1307,7 +1345,23 @@ function handler_change_domain() {
     # 创建从 available 到 enabled 的软链接
     ln -sf "${NGINX_CONFIG_DIR}/sites-available/${CONFIG_DATA["${target_domain}"]}.conf" "${NGINX_CONFIG_DIR}/sites-enabled/${CONFIG_DATA["${target_domain}"]}.conf"
     # 为新域名申请 SSL 证书
-    exec_ssl '--issue' --domain=${CONFIG_DATA["${target_domain}"]}
+    if exec_ssl '--issue' --domain=${CONFIG_DATA["${target_domain}"]}; then
+        # 如果旧域名存在
+        if [[ -n "${old_domain}" && "${stop_cert_service}" == "y" ]] && exec_ssl '--status' --domain=${old_domain}; then
+            # 停止旧域名的证书续签
+            exec_ssl '--stop-renew' --domain=${old_domain}
+        fi
+    else
+        # 删除新配置
+        rm -rf ${NGINX_CONFIG_DIR}/sites-{available,enabled}/${CONFIG_DATA["${target_domain}"]}.conf
+        # 恢复备份的 Nginx 配置文件
+        mv -f ${SCRIPT_CONFIG_DIR}/stream.conf ${NGINX_CONFIG_DIR}/modules-enabled/stream.conf
+        mv -f ${SCRIPT_CONFIG_DIR}/${old_domain}.conf ${NGINX_CONFIG_DIR}/sites-available/${old_domain}.conf
+        ln -sf ${NGINX_CONFIG_DIR}/sites-available/${old_domain}.conf ${NGINX_CONFIG_DIR}/sites-enabled/${old_domain}.conf
+        # 重启或启动 Nginx
+        handler_nginx_restart
+        exit 1
+    fi
     # 更新脚本配置中的域名
     SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --arg key "${target_domain}" --arg domain "${CONFIG_DATA["${target_domain}"]}" '.nginx[$key] = $domain')"
     SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --arg key "${target_domain}" --arg domain "${old_domain}" 'if $key == "domain" then del(.target[$key]) else . end')"
@@ -1322,8 +1376,36 @@ function handler_change_domain() {
     sed -i "s|example.com|$(echo "${SCRIPT_CONFIG}" | jq -r '.nginx.domain')|g" "${NGINX_CONFIG_DIR}/modules-enabled/stream.conf"
     # 将更新后的脚本配置写入文件
     echo "${SCRIPT_CONFIG}" >"${SCRIPT_CONFIG_PATH}" && sleep 2
+    # 如果仅更新域名
+    if [[ "${CONFIG_DATA['only-change-domain'],,}" == "y" ]]; then
+        # 恢复备份的 Nginx 配置文件
+        mv -f ${SCRIPT_CONFIG_DIR}/stream.conf ${NGINX_CONFIG_DIR}/modules-enabled/stream.conf
+        mv -f ${SCRIPT_CONFIG_DIR}/${old_domain}.conf ${NGINX_CONFIG_DIR}/sites-available/${CONFIG_DATA["${target_domain}"]}.conf
+        rm -rf "${NGINX_CONFIG_DIR}/sites-enabled/${CONFIG_DATA["${target_domain}"]}.conf"
+        # 更新域名
+        sed -i "s|${old_domain}|${CONFIG_DATA["${target_domain}"]}|g" "${NGINX_CONFIG_DIR}/sites-available/${CONFIG_DATA["${target_domain}"]}.conf"
+        sed -i "s|${old_domain}|${CONFIG_DATA["${target_domain}"]}|g" "${NGINX_CONFIG_DIR}/modules-enabled/stream.conf"
+        # 创建从 available 到 enabled 的软链接
+        ln -sf "${NGINX_CONFIG_DIR}/sites-available/${CONFIG_DATA["${target_domain}"]}.conf" "${NGINX_CONFIG_DIR}/sites-enabled/${CONFIG_DATA["${target_domain}"]}.conf"
+    fi
     # 重启或启动 Nginx
     handler_nginx_restart
+}
+
+# =============================================================================
+# 函数名称: handler_renew_ssl
+# 功能描述: 强制续期所有由 acme.sh 管理的 SSL 证书。
+# 参数: 无
+# 返回值: 无 (通过文件操作和调用其他脚本执行)
+# =============================================================================
+function handler_renew_ssl() {
+    # 域名的证书续签
+    if exec_ssl '--renew'; then
+        # 重启或启动 Nginx
+        handler_nginx_restart
+        # 重启 Xray 服务
+        handler_restart
+    fi
 }
 
 # =============================================================================
@@ -1432,11 +1514,13 @@ function handler_web() {
         # 启用 Cloudreve 配置 (取消注释)
         sed -i "s|# include web/cloudreve.conf;|include web/cloudreve.conf;|" "${NGINX_CONFIG_DIR}/sites-available/${domain}.conf"
         sed -i "s|# include web/cloudreve.conf;|include web/cloudreve.conf;|" "${NGINX_CONFIG_DIR}/sites-available/${cdn}.conf"
+        sed -i "s|include web/normal.conf;|# include web/normal.conf;|" "${NGINX_CONFIG_DIR}/sites-available/${cdn}.conf"
         ;;
     *)
         # 禁用 Cloudreve 配置 (添加注释)
         sed -i "s|[^#] include web/cloudreve.conf;|  # include web/cloudreve.conf;|" "${NGINX_CONFIG_DIR}/sites-available/${domain}.conf"
         sed -i "s|[^#] include web/cloudreve.conf;|  # include web/cloudreve.conf;|" "${NGINX_CONFIG_DIR}/sites-available/${cdn}.conf"
+        sed -i "s|# include web/normal.conf;|include web/normal.conf;|" "${NGINX_CONFIG_DIR}/sites-available/${cdn}.conf"
         ;;
     esac
     # 重启或启动 Nginx 与 xray 服务
@@ -1523,9 +1607,13 @@ function main() {
     --change-domain)
         handler_change_domain "$1" # 处理域名配置
         handler_xray_config        # 更新 Xray 配置
-        # 还原 Web 服务
-        handler_web "$(echo "${SCRIPT_CONFIG}" | jq -r '.nginx.web')"
+        handler_restart            # 重启 Xray
+        if ! [[ "${CONFIG_DATA['only-change-domain'],,}" == "y" ]]; then
+            # 还原 Web 服务
+            handler_web "$(echo "${SCRIPT_CONFIG}" | jq -r '.nginx.web')"
+        fi
         ;;                                      # 更改域名
+    --renew-certificate) handler_renew_ssl ;;   # 强制证书续签
     --web) handler_web "$1" ;;                  # 配置 Web 服务
     --v3-reset) handler_cloudreve_v3 'reset' ;; # 重置 Cloudreve v3
     --share) handler_share ;;                   # 显示分享链接
@@ -1534,9 +1622,15 @@ function main() {
     --warp) handler_warp ;;                     # 管理 WARP
     --reset-warp) handler_reset_warp ;;         # 重置 WARP
     --traffic) handler_traffic ;;               # 显示流量统计
-    --start) handler_start ;;                   # 启动 Xray
-    --stop) handler_stop ;;                     # 停止 Xray
-    --restart) handler_restart ;;               # 重启 Xray
+    --change-port)
+        handler_change_xray_port  # 处理 Xray 端口配置
+        handler_xray_config       # 更新 Xray 配置
+        handler_restart           # 重启 Xray
+        handler_share             # 显示分享链接
+        ;;                        # 修改 Xray 端口
+    --start) handler_start ;;     # 启动 Xray
+    --stop) handler_stop ;;       # 停止 Xray
+    --restart) handler_restart ;; # 重启 Xray
     esac
 }
 
