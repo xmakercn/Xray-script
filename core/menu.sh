@@ -375,6 +375,7 @@ function menu_sni_config() {
     # 打印选项 7
     echo -e "${GREEN}7.${NC} $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.sni_config.option7")"
     echo -e "${GREEN}8.${NC} $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.sni_config.option8")"
+    echo -e "${GREEN}9.${NC} $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.sni_config.option9")"
 
     # 打印分隔线
     echo -e "------------------------------------------------------"
@@ -383,7 +384,23 @@ function menu_sni_config() {
     # 打印选项 2 的说明信息
     echo -e "2. $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.sni_config.info2")"
     echo -e "8. $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.sni_config.info3")"
+    echo -e "9. $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.sni_config.info4")"
     # 打印分隔线
+    echo -e "------------------------------------------------------"
+}
+
+function menu_custom_sites() {
+    echo -e "------------------ $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.custom_sites.title") ------------------"
+    echo -e "${GREEN}1.${NC} $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.custom_sites.option1")"
+    echo -e "${GREEN}2.${NC} $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.custom_sites.option2")"
+    echo -e "${GREEN}3.${NC} $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.custom_sites.option3")"
+    echo -e "${GREEN}4.${NC} $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.custom_sites.option4")"
+
+    echo -e "------------------------------------------------------"
+    echo -e "1. $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.custom_sites.info1")"
+    echo -e "2. $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.custom_sites.info2")"
+    echo -e "3. $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.custom_sites.info3")"
+    echo -e "4. $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.custom_sites.info4")"
     echo -e "------------------------------------------------------"
 }
 
@@ -508,6 +525,7 @@ function main() {
     --management) menu_config >&2 ;;      # 显示配置管理菜单
     --route) menu_route >&2 ;;            # 显示路由管理菜单
     --sni) menu_sni_config >&2 ;;         # 显示 SNI 配置菜单
+    --custom-sites) menu_custom_sites >&2 ;;
     --banner) print_banner >&2 ;;         # 显示 Banner
     --status) print_status >&2 ;;         # 显示状态信息
     esac
