@@ -341,6 +341,18 @@ function processes_routing() {
     exec_handler '--restart' # 重启 Xray 服务
 }
 
+function processes_custom_sites() {
+    exec_menu '--custom-sites'
+    local choose=$(echo $?)
+    case ${choose} in
+    1) exec_handler '--custom-sites' 'list' ;;
+    2) exec_handler '--custom-sites' 'add' ;;
+    3) exec_handler '--custom-sites' 'update' ;;
+    4) exec_handler '--custom-sites' 'delete' ;;
+    *) return 0 ;;
+    esac
+}
+
 # =============================================================================
 # 函数名称: processes_sni_config
 # 功能描述: 处理 SNI 配置相关的流程。
@@ -371,6 +383,7 @@ function processes_sni_config() {
     6) processes_web_config ;;                    # 选择 6：进入 Web 配置流程
     7) exec_handler '--v3-reset' ;;               # 选择 7：重置 V3 配置
     8) processes_ca_vendor 'switch' ;;
+    9) processes_custom_sites ;;
     *) exit 0 ;;                                  # 其他情况：退出脚本
     esac
 }
