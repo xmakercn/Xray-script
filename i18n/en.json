@@ -129,9 +129,22 @@
       "option6": "Modify web config",
       "option7": "Reset Cloudreve v3 admin data",
       "option8": "Switch CA vendor",
+      "option9": "Manage custom domains and reverse proxy apps",
       "info1": "Domain for REALITY",
       "info2": "Domain for CDN",
-      "info3": "Switching CA updates config and affects subsequent certificate issuance"
+      "info3": "Switching CA updates config and affects subsequent certificate issuance",
+      "info4": "List, add, edit, or delete extra HTTPS reverse proxy sites"
+    },
+    "custom_sites": {
+      "title": "Custom Site Management",
+      "option1": "List sites",
+      "option2": "Add site",
+      "option3": "Edit/Update site",
+      "option4": "Delete site",
+      "info1": "Show index, domain, proxy target, and UDS name",
+      "info2": "Add an independent certificate and reverse proxy site",
+      "info3": "Modify the domain or upstream target",
+      "info4": "Delete site config, certificate, and renew record"
     }
   },
   "handler": {
@@ -153,6 +166,16 @@
       "close_cron": "Successfully stopped nginx auto-update task",
       "open_cron": "Successfully started nginx auto-update task"
     },
+    "custom_sites": {
+      "empty": "No custom sites configured",
+      "list_header": "Index | Domain | Proxy Target | UDS",
+      "keep_current": "Leave empty to keep the current value",
+      "added": "Custom site added: ",
+      "updated": "Custom site updated: ",
+      "deleted": "Custom site deleted: ",
+      "upstream_only": "Only the upstream target changed; certificate re-issue is skipped",
+      "syncing": "Syncing custom site configuration"
+    },
     "sni": {
       "port_guard_fail": "SNI initialization stopped: required port check failed"
     }
@@ -173,6 +196,9 @@
     "only_change_domain": "Only change domain [Y/n]: ",
     "domain": "Enter website domain (for Reality): ",
     "cdn": "Enter website domain (for CDN): ",
+    "custom_domain": "Enter custom site domain: ",
+    "proxy_target": "Enter proxy target (port or http[s]://host:port): ",
+    "site_index": "Enter site index: ",
     "email": "Enter email for ZeroSSL registration: ",
     "switch_ca": "Switching CA requires re-issuing certificates, continue switching [y/N]: ",
     "short": "Enter shortId (comma separated, default auto-generated): ",
@@ -287,6 +313,31 @@
       "valid": "Email format is valid: ",
       "empty": "Email cannot be empty",
       "format_error": "Invalid email format: "
+    },
+    "proxy_target": {
+      "check": "Validating proxy target: ",
+      "empty": "Proxy target cannot be empty",
+      "normalized": "Normalized port-only input to: ",
+      "format_error": "Invalid proxy target format, only http[s]://host:port or a raw port is allowed: ",
+      "scheme_error": "Proxy target scheme must be http or https: ",
+      "host_error": "Invalid proxy target host: ",
+      "path_error": "Proxy target must not include path, query, or fragment: ",
+      "valid": "Proxy target is valid: "
+    },
+    "custom_domain": {
+      "check": "Validating custom site domain: ",
+      "empty": "Custom site domain cannot be empty",
+      "duplicate_domain": "Custom site domain must not duplicate the default domain: ",
+      "duplicate_cdn": "Custom site domain must not duplicate the CDN domain: ",
+      "duplicate_custom": "Custom site domain already exists: ",
+      "valid": "Custom site domain is valid: "
+    },
+    "list_index": {
+      "check": "Validating list index: ",
+      "empty_list": "There are no sites available for this operation",
+      "format_error": "Index must be a positive integer: ",
+      "range_error": "Index is out of range, current list size is ${total}: ",
+      "valid": "List index is valid: "
     }
   },
   "docker": {
