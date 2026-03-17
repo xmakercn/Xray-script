@@ -35,7 +35,8 @@
     "ca_server": "zerossl",
     "domain": "",
     "cdn": "",
-    "web": ""
+    "web": "",
+    "custom_sites": []
   },
   "target": {
     "www.fandom.com": [
