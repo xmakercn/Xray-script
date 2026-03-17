@@ -129,9 +129,22 @@
       "option6": "修改 Web 配置",
       "option7": "重置 Cloudreve v3 版管理员数据",
       "option8": "切换 CA 厂商",
+      "option9": "管理自定义域名与反代应用",
       "info1": "Reality 对应的域名",
       "info2": "套用 CDN 的域名",
-      "info3": "切换后会写入配置，并影响后续证书签发"
+      "info3": "切换后会写入配置，并影响后续证书签发",
+      "info4": "为额外挂载的 HTTPS 反代站点做列表、新增、编辑和删除"
+    },
+    "custom_sites": {
+      "title": "自定义站点管理",
+      "option1": "查看站点列表",
+      "option2": "新增站点",
+      "option3": "编辑/更新站点",
+      "option4": "删除站点",
+      "info1": "显示索引、域名、反代目标与 UDS 名称",
+      "info2": "新增独立证书和独立反代站点",
+      "info3": "支持修改域名或上游地址",
+      "info4": "删除站点配置、证书与续签记录"
     }
   },
   "handler": {
@@ -153,6 +166,16 @@
       "close_cron": "成功停止 nginx 自动更新任务",
       "open_cron": "成功开启 nginx 自动更新任务"
     },
+    "custom_sites": {
+      "empty": "当前没有自定义站点",
+      "list_header": "编号 | 域名 | 反代目标 | UDS",
+      "keep_current": "留空可保留当前值",
+      "added": "自定义站点已新增：",
+      "updated": "自定义站点已更新：",
+      "deleted": "自定义站点已删除：",
+      "upstream_only": "仅更新上游地址，不会重复签发证书",
+      "syncing": "正在同步自定义站点配置"
+    },
     "sni": {
       "port_guard_fail": "SNI 初始化已停止：必需端口检查未通过"
     }
@@ -173,6 +196,9 @@
     "only_change_domain": "仅更新域名 [Y/n]: ",
     "domain": "请输入网站域名 (供 Reality 使用): ",
     "cdn": "请输入网站域名 (供 CDN 使用): ",
+    "custom_domain": "请输入自定义站点域名: ",
+    "proxy_target": "请输入反代目标 (端口或 http[s]://host:port): ",
+    "site_index": "请输入站点编号: ",
     "email": "请输入用于注册 ZeroSSL 的邮箱: ",
     "switch_ca": "切换 CA 需要重新申请证书，是否继续切换 [y/N]: ",
     "short": "请输入 shortId (多个值请用英文逗号分隔，默认自动生成): ",
@@ -287,6 +313,31 @@
       "valid": "电子邮箱格式合法：",
       "empty": "电子邮箱不能为空",
       "format_error": "电子邮箱格式不合法："
+    },
+    "proxy_target": {
+      "check": "正在校验反代目标：",
+      "empty": "反代目标不能为空",
+      "normalized": "已将端口输入规范化为：",
+      "format_error": "反代目标格式不合法，仅支持 http[s]://host:port 或纯端口：",
+      "scheme_error": "反代目标协议仅支持 http 或 https：",
+      "host_error": "反代目标主机不合法：",
+      "path_error": "反代目标不能包含 path、query 或 fragment：",
+      "valid": "反代目标合法："
+    },
+    "custom_domain": {
+      "check": "正在校验自定义站点域名：",
+      "empty": "自定义站点域名不能为空",
+      "duplicate_domain": "自定义站点域名不能与默认域名重复：",
+      "duplicate_cdn": "自定义站点域名不能与 CDN 域名重复：",
+      "duplicate_custom": "自定义站点域名已存在：",
+      "valid": "自定义站点域名合法："
+    },
+    "list_index": {
+      "check": "正在校验列表索引：",
+      "empty_list": "当前没有可操作的站点",
+      "format_error": "索引必须为正整数：",
+      "range_error": "索引超出范围，当前列表总数为 ${total}：",
+      "valid": "列表索引合法："
     }
   },
   "docker": {
