@@ -383,6 +383,39 @@ function parse_proxy_target() {
     return 1
 }
 
+function sync_missing_nginx_support_dir() {
+    local source_dir="$1"
+    local target_dir="$2"
+    local source_path=''
+    local relative_path=''
+    local target_path=''
+
+    [[ -d "${source_dir}" ]] || return 0
+    mkdir -p "${target_dir}" || return 1
+
+    while IFS= read -r -d '' source_path; do
+        relative_path="${source_path#${source_dir}/}"
+        target_path="${target_dir}/${relative_path}"
+        [[ -e "${target_path}" ]] && continue
+        mkdir -p "$(dirname "${target_path}")" || return 1
+        cp -f "${source_path}" "${target_path}" || return 1
+    done < <(find "${source_dir}" -type f -print0)
+}
+
+function ensure_nginx_support_files() {
+    mkdir -p \
+        "${NGINX_CONFIG_DIR}/sites-available" \
+        "${NGINX_CONFIG_DIR}/sites-enabled" \
+        "${NGINX_CONFIG_DIR}/modules-enabled" \
+        "${NGINX_CONFIG_DIR}/conf.d" \
+        "${NGINX_CONFIG_DIR}/web" \
+        "${NGINX_CONFIG_DIR}/nginxconfig.io" || return 1
+
+    sync_missing_nginx_support_dir "${CONFIG_DIR}/nginx/conf/conf.d" "${NGINX_CONFIG_DIR}/conf.d" || return 1
+    sync_missing_nginx_support_dir "${CONFIG_DIR}/nginx/conf/web" "${NGINX_CONFIG_DIR}/web" || return 1
+    sync_missing_nginx_support_dir "${CONFIG_DIR}/nginx/conf/nginxconfig.io" "${NGINX_CONFIG_DIR}/nginxconfig.io" || return 1
+}
+
 function write_stream_config() {
     local target_path="$1"
     local source_config="${2:-${SCRIPT_CONFIG}}"
@@ -452,6 +485,7 @@ function render_custom_site_config() {
     local socket_name="$(get_custom_site_socket_name "${domain}" "${port}")"
     local proxy_target="${scheme}://${host}:${port}"
 
+    ensure_nginx_support_files || return 1
     cp -f "${CONFIG_DIR}/nginx/conf/sites-available/custom-site.example.com.conf" "${output_path}" || return 1
     sed -i "s|example.com|${domain}|g" "${output_path}"
     sed -i "s|unix:/dev/shm/nginx/custom_site.sock|unix:/dev/shm/nginx/${socket_name}.sock|g" "${output_path}"
@@ -475,6 +509,7 @@ function sync_custom_sites_config() {
 }
 
 function test_and_reload_nginx() {
+    ensure_nginx_support_files || return 1
     nginx -t || return 1
     if systemctl -q is-active nginx; then
         systemctl -q reload nginx
@@ -1763,6 +1798,7 @@ function handler_nginx_cron() {
 # 返回值: 无 (通过 systemctl 命令执行操作)
 # =============================================================================
 function handler_nginx_start() {
+    ensure_nginx_support_files || return 1
     # 检查 nginx 服务是否活跃，如果不活跃则启动
     systemctl -q is-active nginx || systemctl -q start nginx
     # 检查 nginx 服务是否已启用，如果未启用则启用
@@ -1797,6 +1833,7 @@ function handler_nginx_stop() {
 # 返回值: 无 (通过 systemctl 命令执行操作)
 # =============================================================================
 function handler_nginx_restart() {
+    ensure_nginx_support_files || return 1
     # 检查 nginx 服务是否活跃，如果活跃则重启，否则启动
     systemctl -q is-active nginx && systemctl -q restart nginx || systemctl -q start nginx
     # 检查 nginx 服务是否已启用，如果未启用则启用
@@ -1848,6 +1885,7 @@ function handler_change_domain() {
     local stop_cert_service="${2:-y}"
     # 从脚本配置中获取旧域名
     local old_domain="$(echo "${SCRIPT_CONFIG}" | jq -r --arg key "${target_domain}" '.nginx[$key]')"
+    ensure_nginx_support_files || _error "failed to sync nginx support files"
     # 如果 CONFIG_DATA 中没有新域名，且 stop_cert_service 为 "y"，则读取用户输入
     if [[ -z "${CONFIG_DATA["${target_domain}"]}" && "${stop_cert_service}" == "y" ]]; then
         [[ "${old_domain}" ]] && exec_read 'only-change-domain'
