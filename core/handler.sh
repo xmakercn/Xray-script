@@ -274,6 +274,15 @@ function exec_read() {
             # 如果是 'domain' 选项，同时设置 CONFIG_DATA['target']
             [[ "$1" == 'domain' ]] && CONFIG_DATA['target']="${result}"
             ;;
+        custom-domain)
+            exec_check '--custom-domain' "${result}" "${CONFIG_DATA['ignore-domain']}" || continue
+            ;;
+        proxy-target)
+            result="$(exec_check '--proxy-target' "${result}")" || continue
+            ;;
+        site-index)
+            exec_check '--list-index' "${result}" "${CONFIG_DATA['site-count']}" || continue
+            ;;
         short)
             # 特殊处理 Short IDs
             # 如果输入为空，进行验证 (可能是检查默认值)
@@ -342,6 +351,209 @@ function reset_json_fields() {
     ')
     # 输出重置后的 JSON 字符串
     echo "${raw_json}"
+}
+
+function persist_script_config() {
+    echo "${SCRIPT_CONFIG}" >"${SCRIPT_CONFIG_PATH}" && sleep 2
+}
+
+function get_custom_site_socket_name() {
+    local domain="$1"
+    local port="$2"
+    local hash=''
+
+    hash="$(printf '%s' "${domain}" | openssl dgst -sha256 2>/dev/null | awk '{print $NF}' | cut -c1-12)"
+    [[ -n "${hash}" ]] || hash="$(printf '%s' "${domain}" | shasum -a 256 2>/dev/null | awk '{print $1}' | cut -c1-12)"
+    [[ -n "${hash}" ]] || _error "failed to generate custom site socket name"
+    echo "${hash}${port}"
+}
+
+function get_custom_site_upstream_name() {
+    local domain="$1"
+    local port="$2"
+    echo "custom_site_$(get_custom_site_socket_name "${domain}" "${port}")"
+}
+
+function parse_proxy_target() {
+    local proxy_target="$1"
+    if [[ "${proxy_target}" =~ ^(https?)://([^:]+):([0-9]+)$ ]]; then
+        printf '%s\t%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+        return 0
+    fi
+    return 1
+}
+
+function write_stream_config() {
+    local target_path="$1"
+    local source_config="${2:-${SCRIPT_CONFIG}}"
+    local domain="$(echo "${source_config}" | jq -r '.nginx.domain')"
+    local cdn_domain="$(echo "${source_config}" | jq -r '.nginx.cdn')"
+    local site_domain=''
+    local site_port=''
+    local socket_name=''
+    local upstream_name=''
+
+    {
+        echo 'stream {'
+        echo '    map $ssl_preread_server_name $tcpsni_name {'
+        [[ -n "${domain}" && "${domain}" != 'null' ]] && printf '        %-30s %s;\n' "${domain}" 'nginx_to_xray_vision'
+        [[ -n "${cdn_domain}" && "${cdn_domain}" != 'null' ]] && printf '        %-30s %s;\n' "${cdn_domain}" 'cdn_to_nginx'
+        while IFS=$'\t' read -r site_domain site_port; do
+            [[ -n "${site_domain}" ]] || continue
+            upstream_name="$(get_custom_site_upstream_name "${site_domain}" "${site_port}")"
+            printf '        %-30s %s;\n' "${site_domain}" "${upstream_name}"
+        done < <(echo "${source_config}" | jq -r '.nginx.custom_sites // [] | .[] | [.domain, (.port | tostring)] | @tsv')
+        printf '        %-30s %s;\n' 'default' 'default_backend'
+        echo '    }'
+        echo
+        echo '    upstream nginx_to_xray_vision {'
+        echo '        server unix:/dev/shm/nginx/nginx_to_xray_vision.sock;'
+        echo '    }'
+        echo
+        echo '    upstream cdn_to_nginx {'
+        echo '        server unix:/dev/shm/nginx/cdn_to_nginx.sock;'
+        echo '    }'
+        echo
+        while IFS=$'\t' read -r site_domain site_port; do
+            [[ -n "${site_domain}" ]] || continue
+            socket_name="$(get_custom_site_socket_name "${site_domain}" "${site_port}")"
+            upstream_name="$(get_custom_site_upstream_name "${site_domain}" "${site_port}")"
+            echo "    upstream ${upstream_name} {"
+            echo "        server unix:/dev/shm/nginx/${socket_name}.sock;"
+            echo '    }'
+            echo
+        done < <(echo "${source_config}" | jq -r '.nginx.custom_sites // [] | .[] | [.domain, (.port | tostring)] | @tsv')
+        echo '    upstream default_backend {'
+        echo '        server unix:/dev/shm/nginx/default_backend.sock;'
+        echo '    }'
+        echo
+        echo '    server {'
+        echo '        listen         443 reuseport;'
+        echo '        listen         [::]:443 reuseport;'
+        echo '        ssl_preread    on;'
+        echo '        proxy_protocol on;'
+        echo '        proxy_pass     $tcpsni_name;'
+        echo '    }'
+        echo '}'
+    } >"${target_path}"
+}
+
+function rebuild_stream_config() {
+    local source_config="${1:-${SCRIPT_CONFIG}}"
+    write_stream_config "${NGINX_CONFIG_DIR}/modules-enabled/stream.conf" "${source_config}"
+}
+
+function render_custom_site_config() {
+    local domain="$1"
+    local scheme="$2"
+    local host="$3"
+    local port="$4"
+    local output_path="$5"
+    local socket_name="$(get_custom_site_socket_name "${domain}" "${port}")"
+    local proxy_target="${scheme}://${host}:${port}"
+
+    cp -f "${CONFIG_DIR}/nginx/conf/sites-available/custom-site.example.com.conf" "${output_path}" || return 1
+    sed -i "s|example.com|${domain}|g" "${output_path}"
+    sed -i "s|unix:/dev/shm/nginx/custom_site.sock|unix:/dev/shm/nginx/${socket_name}.sock|g" "${output_path}"
+    sed -i "s|PROXY_TARGET|${proxy_target}|g" "${output_path}"
+}
+
+function sync_custom_sites_config() {
+    local source_config="${1:-${SCRIPT_CONFIG}}"
+    local domain=''
+    local scheme=''
+    local host=''
+    local port=''
+    local conf_path=''
+
+    while IFS=$'\t' read -r domain scheme host port; do
+        [[ -n "${domain}" ]] || continue
+        conf_path="${NGINX_CONFIG_DIR}/sites-available/${domain}.conf"
+        render_custom_site_config "${domain}" "${scheme}" "${host}" "${port}" "${conf_path}" || return 1
+        ln -sf "${conf_path}" "${NGINX_CONFIG_DIR}/sites-enabled/${domain}.conf" || return 1
+    done < <(echo "${source_config}" | jq -r '.nginx.custom_sites // [] | .[] | [.domain, .scheme, .host, (.port | tostring)] | @tsv')
+}
+
+function test_and_reload_nginx() {
+    nginx -t || return 1
+    if systemctl -q is-active nginx; then
+        systemctl -q reload nginx
+    else
+        systemctl -q start nginx
+    fi
+}
+
+function get_custom_sites_count() {
+    echo "${SCRIPT_CONFIG}" | jq -r '.nginx.custom_sites // [] | length'
+}
+
+function show_custom_sites_list() {
+    local custom_site_count="$(get_custom_sites_count)"
+    local index=''
+    local domain=''
+    local scheme=''
+    local host=''
+    local port=''
+    local socket_name=''
+
+    if ((custom_site_count == 0)); then
+        echo -e "${YELLOW}[$(echo "$I18N_DATA" | jq -r '.title.info')]${NC} $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.custom_sites.empty")" >&2
+        return 0
+    fi
+
+    echo -e "${GREEN}[$(echo "$I18N_DATA" | jq -r '.title.info')]${NC} $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.custom_sites.list_header")" >&2
+    while IFS=$'\t' read -r index domain scheme host port; do
+        socket_name="$(get_custom_site_socket_name "${domain}" "${port}")"
+        printf '%s | %s | %s://%s:%s | %s.sock\n' "${index}" "${domain}" "${scheme}" "${host}" "${port}" "${socket_name}" >&2
+    done < <(echo "${SCRIPT_CONFIG}" | jq -r '.nginx.custom_sites // [] | to_entries[] | [(.key + 1 | tostring), .value.domain, .value.scheme, .value.host, (.value.port | tostring)] | @tsv')
+}
+
+function read_custom_site_domain_update() {
+    local current_domain="$1"
+    local result=''
+    echo -e "${YELLOW}[$(echo "$I18N_DATA" | jq -r '.title.tip')]${NC} $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.custom_sites.keep_current")" >&2
+    while true; do
+        result="$(bash "${READ_PATH}" '--custom-domain')"
+        if [[ -z "${result}" ]]; then
+            echo "${current_domain}"
+            return 0
+        fi
+        if exec_check '--custom-domain' "${result}" "${current_domain}"; then
+            echo "${result}"
+            return 0
+        fi
+    done
+}
+
+function read_custom_site_proxy_target_update() {
+    local current_proxy_target="$1"
+    local result=''
+    echo -e "${YELLOW}[$(echo "$I18N_DATA" | jq -r '.title.tip')]${NC} $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.custom_sites.keep_current")" >&2
+    while true; do
+        result="$(bash "${READ_PATH}" '--proxy-target')"
+        if [[ -z "${result}" ]]; then
+            echo "${current_proxy_target}"
+            return 0
+        fi
+        result="$(exec_check '--proxy-target' "${result}")" || continue
+        echo "${result}"
+        return 0
+    done
+}
+
+function rollback_stream_config_backup() {
+    local backup_path="$1"
+    local stream_path="${NGINX_CONFIG_DIR}/modules-enabled/stream.conf"
+    if [[ -f "${backup_path}" ]]; then
+        mv -f "${backup_path}" "${stream_path}"
+    else
+        rm -f "${stream_path}"
+    fi
+}
+
+function get_custom_site_json_by_index() {
+    local site_index="$1"
+    echo "${SCRIPT_CONFIG}" | jq -c --argjson idx "$((site_index - 1))" '.nginx.custom_sites // [] | .[$idx]'
 }
 
 # =============================================================================
@@ -508,6 +720,10 @@ function handler_ca_server() {
     if [[ -n "${cdn_domain}" && "${cdn_domain}" != 'null' && "${cdn_domain}" != "${domain}" ]]; then
         reissue_targets+=("${cdn_domain}")
     fi
+    while IFS= read -r reissue_domain; do
+        [[ -n "${reissue_domain}" ]] || continue
+        reissue_targets+=("${reissue_domain}")
+    done < <(echo "${SCRIPT_CONFIG}" | jq -r '.nginx.custom_sites // [] | .[] | .domain')
 
     for reissue_domain in "${reissue_targets[@]}"; do
         if exec_ssl '--issue' "--domain=${reissue_domain}" "--ca=${target_ca_server}"; then
@@ -893,6 +1109,11 @@ function handler_sni_config() {
         # 为域名和 CDN 配置 Nginx 和 SSL
         handler_change_domain 'domain' 'n'
         handler_change_domain 'cdn' 'n'
+        if (( $(echo "${SCRIPT_CONFIG}" | jq -r '.nginx.custom_sites // [] | length') > 0 )); then
+            echo -e "${GREEN}[$(echo "$I18N_DATA" | jq -r '.title.info')]${NC} $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.custom_sites.syncing")" >&2
+            sync_custom_sites_config "${SCRIPT_CONFIG}" || _error "failed to sync custom sites"
+            rebuild_stream_config "${SCRIPT_CONFIG}"
+        fi
         # 对于 SNI 配置，调用 handler_web 配置 Web 服务
         handler_web "${web}"
         ;;
@@ -903,6 +1124,231 @@ function handler_check_sni_ports() {
     if ! exec_check '--sni-ports'; then
         _error "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.sni.port_guard_fail")"
     fi
+}
+
+function handler_custom_site_list() {
+    show_custom_sites_list
+}
+
+function handler_custom_site_add() {
+    local domain=''
+    local proxy_target=''
+    local scheme=''
+    local host=''
+    local port=''
+    local updated_script_config=''
+    local conf_path=''
+    local link_path=''
+    local stream_backup="${SCRIPT_CONFIG_DIR}/stream.conf.custom-sites.bak"
+
+    exec_read 'custom-domain'
+    exec_read 'proxy-target'
+
+    domain="${CONFIG_DATA['custom-domain']}"
+    proxy_target="${CONFIG_DATA['proxy-target']}"
+    IFS=$'\t' read -r scheme host port <<<"$(parse_proxy_target "${proxy_target}")" || _error "failed to parse proxy target"
+
+    updated_script_config="$(echo "${SCRIPT_CONFIG}" | jq \
+        --arg domain "${domain}" \
+        --arg scheme "${scheme}" \
+        --arg host "${host}" \
+        --argjson port "${port}" \
+        '.nginx.custom_sites = ((.nginx.custom_sites // []) + [{"domain": $domain, "scheme": $scheme, "host": $host, "port": $port}])')"
+
+    conf_path="${NGINX_CONFIG_DIR}/sites-available/${domain}.conf"
+    link_path="${NGINX_CONFIG_DIR}/sites-enabled/${domain}.conf"
+    [[ -f "${NGINX_CONFIG_DIR}/modules-enabled/stream.conf" ]] && cp -f "${NGINX_CONFIG_DIR}/modules-enabled/stream.conf" "${stream_backup}"
+
+    exec_ssl '--issue' "--domain=${domain}" || _error "failed to issue certificate for ${domain}"
+    if ! render_custom_site_config "${domain}" "${scheme}" "${host}" "${port}" "${conf_path}"; then
+        rollback_stream_config_backup "${stream_backup}"
+        exec_ssl '--stop-renew' "--domain=${domain}" || true
+        _error "failed to render custom site config"
+    fi
+    if ! ln -sf "${conf_path}" "${link_path}"; then
+        rm -f "${conf_path}"
+        rollback_stream_config_backup "${stream_backup}"
+        exec_ssl '--stop-renew' "--domain=${domain}" || true
+        _error "failed to enable custom site config"
+    fi
+    rebuild_stream_config "${updated_script_config}"
+
+    if ! test_and_reload_nginx; then
+        rm -f "${conf_path}" "${link_path}"
+        rollback_stream_config_backup "${stream_backup}"
+        exec_ssl '--stop-renew' "--domain=${domain}" || true
+        test_and_reload_nginx || true
+        _error "failed to apply custom site ${domain}"
+    fi
+
+    rm -f "${stream_backup}"
+    SCRIPT_CONFIG="${updated_script_config}"
+    persist_script_config
+    echo -e "${GREEN}[$(echo "$I18N_DATA" | jq -r '.title.info')]${NC} $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.custom_sites.added")${domain}" >&2
+}
+
+function handler_custom_site_update() {
+    local custom_site_count="$(get_custom_sites_count)"
+    local site_index=''
+    local current_site=''
+    local old_domain=''
+    local old_scheme=''
+    local old_host=''
+    local old_port=''
+    local old_proxy_target=''
+    local new_domain=''
+    local new_proxy_target=''
+    local new_scheme=''
+    local new_host=''
+    local new_port=''
+    local updated_script_config=''
+    local old_conf_path=''
+    local new_conf_path=''
+    local old_link_path=''
+    local new_link_path=''
+    local old_conf_backup=''
+    local stream_backup="${SCRIPT_CONFIG_DIR}/stream.conf.custom-sites.bak"
+
+    show_custom_sites_list
+    ((custom_site_count > 0)) || return 0
+    CONFIG_DATA['site-count']="${custom_site_count}"
+    exec_read 'site-index'
+    site_index="${CONFIG_DATA['site-index']}"
+    current_site="$(get_custom_site_json_by_index "${site_index}")"
+
+    old_domain="$(echo "${current_site}" | jq -r '.domain')"
+    old_scheme="$(echo "${current_site}" | jq -r '.scheme')"
+    old_host="$(echo "${current_site}" | jq -r '.host')"
+    old_port="$(echo "${current_site}" | jq -r '.port')"
+    old_proxy_target="${old_scheme}://${old_host}:${old_port}"
+
+    new_domain="$(read_custom_site_domain_update "${old_domain}")"
+    new_proxy_target="$(read_custom_site_proxy_target_update "${old_proxy_target}")"
+    IFS=$'\t' read -r new_scheme new_host new_port <<<"$(parse_proxy_target "${new_proxy_target}")" || _error "failed to parse proxy target"
+
+    updated_script_config="$(echo "${SCRIPT_CONFIG}" | jq \
+        --argjson idx "$((site_index - 1))" \
+        --arg domain "${new_domain}" \
+        --arg scheme "${new_scheme}" \
+        --arg host "${new_host}" \
+        --argjson port "${new_port}" \
+        '.nginx.custom_sites[$idx] = {"domain": $domain, "scheme": $scheme, "host": $host, "port": $port}')"
+
+    old_conf_path="${NGINX_CONFIG_DIR}/sites-available/${old_domain}.conf"
+    new_conf_path="${NGINX_CONFIG_DIR}/sites-available/${new_domain}.conf"
+    old_link_path="${NGINX_CONFIG_DIR}/sites-enabled/${old_domain}.conf"
+    new_link_path="${NGINX_CONFIG_DIR}/sites-enabled/${new_domain}.conf"
+    old_conf_backup="${SCRIPT_CONFIG_DIR}/${old_domain}.custom-site.bak.conf"
+    [[ -f "${old_conf_path}" ]] && cp -f "${old_conf_path}" "${old_conf_backup}"
+    [[ -f "${NGINX_CONFIG_DIR}/modules-enabled/stream.conf" ]] && cp -f "${NGINX_CONFIG_DIR}/modules-enabled/stream.conf" "${stream_backup}"
+
+    if [[ "${new_domain}" == "${old_domain}" ]]; then
+        [[ "${new_proxy_target}" != "${old_proxy_target}" ]] && echo -e "${GREEN}[$(echo "$I18N_DATA" | jq -r '.title.info')]${NC} $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.custom_sites.upstream_only")" >&2
+        if ! render_custom_site_config "${new_domain}" "${new_scheme}" "${new_host}" "${new_port}" "${new_conf_path}"; then
+            [[ -f "${old_conf_backup}" ]] && mv -f "${old_conf_backup}" "${old_conf_path}"
+            rollback_stream_config_backup "${stream_backup}"
+            _error "failed to render custom site config"
+        fi
+        if ! ln -sf "${new_conf_path}" "${new_link_path}"; then
+            [[ -f "${old_conf_backup}" ]] && mv -f "${old_conf_backup}" "${old_conf_path}"
+            rollback_stream_config_backup "${stream_backup}"
+            _error "failed to enable custom site config"
+        fi
+        rebuild_stream_config "${updated_script_config}"
+
+        if ! test_and_reload_nginx; then
+            [[ -f "${old_conf_backup}" ]] && mv -f "${old_conf_backup}" "${old_conf_path}"
+            ln -sf "${old_conf_path}" "${old_link_path}" || true
+            rollback_stream_config_backup "${stream_backup}"
+            test_and_reload_nginx || true
+            _error "failed to update custom site ${old_domain}"
+        fi
+    else
+        exec_ssl '--issue' "--domain=${new_domain}" || _error "failed to issue certificate for ${new_domain}"
+        if ! render_custom_site_config "${new_domain}" "${new_scheme}" "${new_host}" "${new_port}" "${new_conf_path}"; then
+            rollback_stream_config_backup "${stream_backup}"
+            exec_ssl '--stop-renew' "--domain=${new_domain}" || true
+            _error "failed to render custom site config"
+        fi
+        if ! ln -sf "${new_conf_path}" "${new_link_path}"; then
+            rm -f "${new_conf_path}"
+            rollback_stream_config_backup "${stream_backup}"
+            exec_ssl '--stop-renew' "--domain=${new_domain}" || true
+            _error "failed to enable custom site config"
+        fi
+        rm -f "${old_conf_path}" "${old_link_path}"
+        rebuild_stream_config "${updated_script_config}"
+
+        if ! test_and_reload_nginx; then
+            rm -f "${new_conf_path}" "${new_link_path}"
+            [[ -f "${old_conf_backup}" ]] && mv -f "${old_conf_backup}" "${old_conf_path}"
+            ln -sf "${old_conf_path}" "${old_link_path}" || true
+            rollback_stream_config_backup "${stream_backup}"
+            exec_ssl '--stop-renew' "--domain=${new_domain}" || true
+            test_and_reload_nginx || true
+            _error "failed to switch custom site domain ${old_domain} -> ${new_domain}"
+        fi
+        exec_ssl '--stop-renew' "--domain=${old_domain}" || true
+    fi
+
+    rm -f "${old_conf_backup}" "${stream_backup}"
+    SCRIPT_CONFIG="${updated_script_config}"
+    persist_script_config
+    echo -e "${GREEN}[$(echo "$I18N_DATA" | jq -r '.title.info')]${NC} $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.custom_sites.updated")${new_domain}" >&2
+}
+
+function handler_custom_site_delete() {
+    local custom_site_count="$(get_custom_sites_count)"
+    local site_index=''
+    local current_site=''
+    local domain=''
+    local conf_path=''
+    local link_path=''
+    local conf_backup=''
+    local stream_backup="${SCRIPT_CONFIG_DIR}/stream.conf.custom-sites.bak"
+    local updated_script_config=''
+
+    show_custom_sites_list
+    ((custom_site_count > 0)) || return 0
+    CONFIG_DATA['site-count']="${custom_site_count}"
+    exec_read 'site-index'
+    site_index="${CONFIG_DATA['site-index']}"
+    current_site="$(get_custom_site_json_by_index "${site_index}")"
+    domain="$(echo "${current_site}" | jq -r '.domain')"
+    conf_path="${NGINX_CONFIG_DIR}/sites-available/${domain}.conf"
+    link_path="${NGINX_CONFIG_DIR}/sites-enabled/${domain}.conf"
+    conf_backup="${SCRIPT_CONFIG_DIR}/${domain}.custom-site.bak.conf"
+
+    updated_script_config="$(echo "${SCRIPT_CONFIG}" | jq --argjson idx "$((site_index - 1))" 'del(.nginx.custom_sites[$idx])')"
+    [[ -f "${conf_path}" ]] && cp -f "${conf_path}" "${conf_backup}"
+    [[ -f "${NGINX_CONFIG_DIR}/modules-enabled/stream.conf" ]] && cp -f "${NGINX_CONFIG_DIR}/modules-enabled/stream.conf" "${stream_backup}"
+
+    rm -f "${conf_path}" "${link_path}"
+    rebuild_stream_config "${updated_script_config}"
+
+    if ! test_and_reload_nginx; then
+        [[ -f "${conf_backup}" ]] && mv -f "${conf_backup}" "${conf_path}"
+        ln -sf "${conf_path}" "${link_path}" || true
+        rollback_stream_config_backup "${stream_backup}"
+        test_and_reload_nginx || true
+        _error "failed to delete custom site ${domain}"
+    fi
+
+    rm -f "${conf_backup}" "${stream_backup}"
+    SCRIPT_CONFIG="${updated_script_config}"
+    persist_script_config
+    exec_ssl '--stop-renew' "--domain=${domain}" || true
+    echo -e "${GREEN}[$(echo "$I18N_DATA" | jq -r '.title.info')]${NC} $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.custom_sites.deleted")${domain}" >&2
+}
+
+function handler_custom_sites() {
+    case "${1}" in
+    list) handler_custom_site_list ;;
+    add) handler_custom_site_add ;;
+    update) handler_custom_site_update ;;
+    delete) handler_custom_site_delete ;;
+    *) _error "unsupported custom site action: ${1}" ;;
+    esac
 }
 
 # =============================================================================
@@ -1447,26 +1893,19 @@ function handler_change_domain() {
     SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --arg key "${target_domain}" --arg domain "${old_domain}" 'if $key == "domain" then del(.target[$key]) else . end')"
     SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --arg key "${target_domain}" --arg domain "${CONFIG_DATA["${target_domain}"]}" 'if $key == "domain" then .xray.target = $domain else . end')"
     SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --arg key "${target_domain}" --arg domain "${CONFIG_DATA["${target_domain}"]}" 'if $key == "domain" then .xray.serverNames = [$domain] else . end')"
-    # 删除旧域名的 Nginx 配置文件
-    rm -rf ${NGINX_CONFIG_DIR}/modules-enabled/stream.conf
-    # 复制 stream.conf 配置模板到 modules-enabled 目录
-    cp -f "${CONFIG_DIR}/nginx/conf/modules-enabled/stream.conf" "${NGINX_CONFIG_DIR}/modules-enabled/stream.conf"
-    # 替换 stream.conf 的 example.com 与 cdn.example.com 为实际域名
-    sed -i "s|cdn.example.com|$(echo "${SCRIPT_CONFIG}" | jq -r '.nginx.cdn')|g" "${NGINX_CONFIG_DIR}/modules-enabled/stream.conf"
-    sed -i "s|example.com|$(echo "${SCRIPT_CONFIG}" | jq -r '.nginx.domain')|g" "${NGINX_CONFIG_DIR}/modules-enabled/stream.conf"
+    rebuild_stream_config "${SCRIPT_CONFIG}"
     # 将更新后的脚本配置写入文件
-    echo "${SCRIPT_CONFIG}" >"${SCRIPT_CONFIG_PATH}" && sleep 2
+    persist_script_config
     # 如果仅更新域名
     if [[ "${CONFIG_DATA['only-change-domain'],,}" == "y" ]]; then
         # 恢复备份的 Nginx 配置文件
-        mv -f ${SCRIPT_CONFIG_DIR}/stream.conf ${NGINX_CONFIG_DIR}/modules-enabled/stream.conf
         mv -f ${SCRIPT_CONFIG_DIR}/${old_domain}.conf ${NGINX_CONFIG_DIR}/sites-available/${CONFIG_DATA["${target_domain}"]}.conf
         rm -rf "${NGINX_CONFIG_DIR}/sites-enabled/${CONFIG_DATA["${target_domain}"]}.conf"
         # 更新域名
         sed -i "s|${old_domain}|${CONFIG_DATA["${target_domain}"]}|g" "${NGINX_CONFIG_DIR}/sites-available/${CONFIG_DATA["${target_domain}"]}.conf"
-        sed -i "s|${old_domain}|${CONFIG_DATA["${target_domain}"]}|g" "${NGINX_CONFIG_DIR}/modules-enabled/stream.conf"
         # 创建从 available 到 enabled 的软链接
         ln -sf "${NGINX_CONFIG_DIR}/sites-available/${CONFIG_DATA["${target_domain}"]}.conf" "${NGINX_CONFIG_DIR}/sites-enabled/${CONFIG_DATA["${target_domain}"]}.conf"
+        rebuild_stream_config "${SCRIPT_CONFIG}"
     fi
     # 重启或启动 Nginx
     handler_nginx_restart
@@ -1698,6 +2137,7 @@ function main() {
     --web) handler_web "$1" ;;                  # 配置 Web 服务
     --v3-reset) handler_cloudreve_v3 'reset' ;; # 重置 Cloudreve v3
     --ca-server) handler_ca_server "$1" ;;
+    --custom-sites) handler_custom_sites "$1" ;;
     --share) handler_share ;;                   # 显示分享链接
     --nginx-cron) handler_nginx_cron ;;         # 管理 Nginx Cron
     --geodata-cron) handler_geodata_cron ;;     # 管理 GeoData Cron
