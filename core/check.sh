@@ -441,7 +441,7 @@ function check_port() {
     if [[ -z "${port}" ]]; then
         _pass "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.port.empty")"
     # 检查端口号是否在 1-65535 范围内
-    elif ((port < 65535 && port > 1)); then
+    elif [[ "${port}" =~ ^[0-9]+$ ]] && ((port >= 1 && port <= 65535)); then
         _pass "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.port.valid")$port"
     else
         # 如果超出范围，则为无效
@@ -784,6 +784,157 @@ function validate_email() {
 }
 
 # =============================================================================
+# 函数名称: check_proxy_target
+# 功能描述: 解析并校验自定义站点的反代目标。
+#           支持仅输入端口时自动规范化为 http://127.0.0.1:<port>。
+# 参数:
+#   $1: 原始反代目标
+# 返回值: 0-合法并将规范化结果输出到 stdout；1-非法
+# =============================================================================
+function check_proxy_target() {
+    local raw_target="$1"
+    local normalized_target="${raw_target}"
+    local scheme=''
+    local authority=''
+    local host=''
+    local port=''
+
+    _info "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.proxy_target.check")${raw_target}"
+
+    if [[ -z "${raw_target}" ]]; then
+        _fail "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.proxy_target.empty")"
+        return 1
+    fi
+
+    if [[ "${raw_target}" =~ ^[0-9]+$ ]]; then
+        normalized_target="http://127.0.0.1:${raw_target}"
+        _info "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.proxy_target.normalized")${normalized_target}"
+    fi
+
+    if [[ "${normalized_target}" =~ [[:space:]] ]]; then
+        _fail "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.proxy_target.format_error")${normalized_target}"
+        return 1
+    fi
+
+    if [[ "${normalized_target}" == *'?'* || "${normalized_target}" == *'#'* ]]; then
+        _fail "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.proxy_target.path_error")${normalized_target}"
+        return 1
+    fi
+
+    if [[ "${normalized_target}" =~ ^https?://[^/]+/ ]]; then
+        _fail "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.proxy_target.path_error")${normalized_target}"
+        return 1
+    fi
+
+    if ! [[ "${normalized_target}" =~ ^(https?)://([^/]+)$ ]]; then
+        _fail "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.proxy_target.format_error")${normalized_target}"
+        return 1
+    fi
+    scheme="${BASH_REMATCH[1]}"
+    authority="${BASH_REMATCH[2]}"
+
+    if [[ "${scheme}" != 'http' && "${scheme}" != 'https' ]]; then
+        _fail "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.proxy_target.scheme_error")${normalized_target}"
+        return 1
+    fi
+
+    if ! [[ "${authority}" =~ ^([^:]+):([0-9]+)$ ]]; then
+        _fail "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.proxy_target.format_error")${normalized_target}"
+        return 1
+    fi
+    host="${BASH_REMATCH[1]}"
+    port="${BASH_REMATCH[2]}"
+
+    if [[ "${host}" != 'localhost' ]] && ! [[ "${host}" =~ ${IPV4_REGEX} ]] && ! valid_domain "${host}"; then
+        _fail "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.proxy_target.host_error")${host}"
+        return 1
+    fi
+
+    check_port "${port}" || return 1
+    _pass "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.proxy_target.valid")${normalized_target}"
+    echo "${normalized_target}"
+    return 0
+}
+
+# =============================================================================
+# 函数名称: check_custom_site_domain
+# 功能描述: 校验自定义站点域名，确保解析到本机且不与现有域名冲突。
+# 参数:
+#   $1: 待校验域名
+#   $2: 编辑场景下可忽略的旧域名
+# 返回值: 0-合法 1-非法
+# =============================================================================
+function check_custom_site_domain() {
+    local domain="$1"
+    local ignore_domain="$2"
+    local primary_domain=''
+    local cdn_domain=''
+
+    _info "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.custom_domain.check")${domain}"
+
+    if [[ -z "${domain}" ]]; then
+        _fail "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.custom_domain.empty")"
+        return 1
+    fi
+
+    check_dns_resolution "${domain}" || return 1
+
+    primary_domain="$(jq -r '.nginx.domain' "${SCRIPT_CONFIG_PATH}")"
+    cdn_domain="$(jq -r '.nginx.cdn' "${SCRIPT_CONFIG_PATH}")"
+
+    if [[ -n "${primary_domain}" && "${primary_domain}" != 'null' && "${domain}" == "${primary_domain}" && "${domain}" != "${ignore_domain}" ]]; then
+        _fail "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.custom_domain.duplicate_domain")${domain}"
+        return 1
+    fi
+
+    if [[ -n "${cdn_domain}" && "${cdn_domain}" != 'null' && "${domain}" == "${cdn_domain}" && "${domain}" != "${ignore_domain}" ]]; then
+        _fail "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.custom_domain.duplicate_cdn")${domain}"
+        return 1
+    fi
+
+    if jq -e --arg domain "${domain}" --arg ignore "${ignore_domain}" '.nginx.custom_sites // [] | any(.domain == $domain and .domain != $ignore)' "${SCRIPT_CONFIG_PATH}" >/dev/null; then
+        _fail "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.custom_domain.duplicate_custom")${domain}"
+        return 1
+    fi
+
+    _pass "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.custom_domain.valid")${domain}"
+    return 0
+}
+
+# =============================================================================
+# 函数名称: check_list_index
+# 功能描述: 校验列表索引输入是否合法。
+# 参数:
+#   $1: 用户输入索引
+#   $2: 列表总数
+# 返回值: 0-合法 1-非法
+# =============================================================================
+function check_list_index() {
+    local index="$1"
+    local total="${2:-0}"
+
+    _info "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.list_index.check")${index}"
+
+    if ! [[ "${total}" =~ ^[0-9]+$ ]] || ((total < 1)); then
+        _fail "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.list_index.empty_list")"
+        return 1
+    fi
+
+    if ! [[ "${index}" =~ ^[0-9]+$ ]]; then
+        _fail "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.list_index.format_error")${index}"
+        return 1
+    fi
+
+    if ((index < 1 || index > total)); then
+        _fail "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.list_index.range_error" | sed "s|\${total}|${total}|g")${index}"
+        return 1
+    fi
+
+    _pass "$(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.list_index.valid")${index}"
+    return 0
+}
+
+# =============================================================================
 # 函数名称: main
 # 功能描述: 脚本的主入口函数。根据传入的第一个参数 (option)
 #           调用相应的检查函数并输出结果。
@@ -815,6 +966,9 @@ function main() {
     --xray) check_xray_version_exists "$@" >&2 ;; # 检查 Xray 版本
     --email) validate_email "$@" >&2 ;;           # 验证邮箱
     --sni-ports) check_sni_ports "$@" >&2 ;;      # 检查 SNI 必需端口与防火墙状态
+    --proxy-target) check_proxy_target "$@" ;;
+    --custom-domain) check_custom_site_domain "$@" >&2 ;;
+    --list-index) check_list_index "$@" >&2 ;;
     esac
 }
 
