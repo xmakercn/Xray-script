@@ -139,6 +139,9 @@ declare -A param_map=(
     ["--only-change-domain"]="config,only_change_domain"
     ["--domain"]="config,domain"
     ["--cdn"]="config,cdn"
+    ["--custom-domain"]="config,custom_domain"
+    ["--proxy-target"]="config,proxy_target"
+    ["--site-index"]="config,site_index"
     ["--email"]="config,email"
     ["--switch-ca"]="config,switch_ca"
     ["--short"]="config,short"
@@ -168,11 +171,17 @@ function main() {
     # 加载国际化数据
     load_i18n
 
-    # 检查传入的第一个参数是否存在于参数映射表中，如果不存在则直接返回
-    [[ -z "${param_map[$1]}" ]] && return
+    local option="$1"
+    # 兼容调用方直接传入裸参数名，例如 custom-domain
+    if [[ -n "${option}" && "${option}" != --* ]]; then
+        option="--${option}"
+    fi
+
+    # 检查传入的参数是否存在于参数映射表中，如果不存在则直接返回
+    [[ -z "${param_map[$option]}" ]] && return
 
     # 使用 IFS (Internal Field Separator) 将映射表中的值分割为 type 和 field
-    IFS=',' read -r type field <<<"${param_map[$1]}"
+    IFS=',' read -r type field <<<"${param_map[$option]}"
 
     # 构造 i18n 文件中的键名 (例如: read.port, read.uuid)
     local key="${CUR_FILE}.${field}"
@@ -182,7 +191,7 @@ function main() {
     prompt="$(echo "$I18N_DATA" | jq -r ".$key")"
 
     # 对于 --short 参数，额外打印一条关于 Short ID 格式的提示
-    if [[ "$1" == "--short" ]]; then
+    if [[ "${option}" == "--short" ]]; then
         echo -e "${YELLOW}[$(echo "$I18N_DATA" | jq -r '.title.tip')]${NC} $(echo "$I18N_DATA" | jq -r '.read.short_id_tip')" >&2
     fi
 
