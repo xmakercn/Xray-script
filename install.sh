@@ -207,6 +207,11 @@ function load_i18n() {
         lang=$(echo "$LANG" | cut -d'_' -f1)
     fi
 
+    # 语言检测失败（如系统 LANG 未设置导致解析为空）时，回退到默认语言 zh
+    if [[ "${lang}" != "zh" && "${lang}" != "en" ]]; then
+        lang="zh"
+    fi
+
     # 如果语言设置为 "en"，则加载英文提示信息
     if [[ "$lang" == "en" ]]; then
         I18N_DATA=(
@@ -575,8 +580,20 @@ function main() {
 
     # 检查配置文件中的语言设置
     local lang="$(jq -r '.language' "${SCRIPT_CONFIG_PATH}")"
-    if [[ -z "${lang}" && -z "${LANG_PARAM}" ]]; then
-        # 如果语言未设置且未通过命令行指定，则运行菜单脚本选择语言
+    # 若配置为 "auto"，先尝试解析系统语言；检测不到时 lang 为空
+    if [[ "${lang}" == "auto" ]]; then
+        lang="$(echo "$LANG" | cut -d'_' -f1)"
+    fi
+    # 若通过命令行指定了语言，优先使用命令行指定的语言
+    if [[ "${LANG_PARAM}" =~ ^--lang= ]]; then
+        lang="${LANG_PARAM#*=}"
+        if [[ "${lang}" == "auto" ]]; then
+            lang="$(echo "$LANG" | cut -d'_' -f1)"
+        fi
+    fi
+    # 语言仍无法确定（为空或非 zh/en）时，弹出手动选择菜单
+    if [[ "${lang}" != "zh" && "${lang}" != "en" ]]; then
+        # 运行菜单脚本选择语言
         bash "${CORE_DIR}/menu.sh" '--language'
         case $? in
         2) LANG_PARAM="en" ;; # 选择英文
