@@ -86,7 +86,10 @@ function load_i18n() {
     if [[ "$lang" == "auto" ]]; then
         lang=$(echo "$LANG" | cut -d'_' -f1)
     fi
-
+    # 语言检测失败（如系统 LANG 未设置导致解析为空）时，回退到默认语言 zh
+    if [[ "${lang}" != "zh" && "${lang}" != "en" ]]; then
+        lang="zh"
+    fi
     # 构造 i18n 文件的完整路径
     local i18n_file="${I18N_DIR}/${lang}.json"
 
