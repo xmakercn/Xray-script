@@ -862,6 +862,38 @@ function handler_script_config() {
     local SHORT_IDS="$(exec_generate '--short-ids' ${CONFIG_DATA['short_ids']:-'8 8'})"
     # 获取 CA 邮箱
     local CA_EMAIL="${CONFIG_DATA['email']}"
+    # --- 生成多组 UUID/ShortId/SNI 客户端组合配置 ---
+    # 组合数量：用户指定或默认 6，限制在 1-20
+    local CLIENT_COUNT="${CONFIG_DATA['client-count']:-6}"
+    [[ "${CLIENT_COUNT}" =~ ^[0-9]+$ ]] || CLIENT_COUNT=6
+    (( CLIENT_COUNT < 1 )) && CLIENT_COUNT=1
+    (( CLIENT_COUNT > 20 )) && CLIENT_COUNT=20
+    # 第一个组合的 UUID 复用 XRAY_UUID（用户自定义或已生成），其余随机生成
+    local -a CLIENT_UUIDS=("${XRAY_UUID}")
+    local i
+    for ((i = 1; i < CLIENT_COUNT; i++)); do
+        CLIENT_UUIDS+=("$(exec_generate '--uuid')")
+    done
+    # 生成 N 个 ShortId（统一 16 个字符 = openssl rand -hex 8，与原实现保持一致）
+    local -a CLIENT_SIDS=()
+    for ((i = 0; i < CLIENT_COUNT; i++)); do
+        CLIENT_SIDS+=("$(exec_generate '--short-id' 8)")
+    done
+    # 从 serverNames 循环取 N 个 SNI（列表为空时回退 target 域名）
+    local -a SNI_LIST=($(echo "${SERVER_NAMES}" | jq -r '.[]' 2>/dev/null))
+    [[ ${#SNI_LIST[@]} -eq 0 ]] && SNI_LIST=("${TARGET_DOMAIN}")
+    local -a CLIENT_SNIS=()
+    for ((i = 0; i < CLIENT_COUNT; i++)); do
+        CLIENT_SNIS+=("${SNI_LIST[$((i % ${#SNI_LIST[@]}))]}")
+    done
+    # 构造 clients JSON 数组 [{uuid, shortId, sni}, ...]
+    local CLIENTS_JSON="$(jq -n \
+        --argjson uuids "$(printf '%s\n' "${CLIENT_UUIDS[@]}" | jq -R . | jq -s .)" \
+        --argjson sids "$(printf '%s\n' "${CLIENT_SIDS[@]}" | jq -R . | jq -s .)" \
+        --argjson snis "$(printf '%s\n' "${CLIENT_SNIS[@]}" | jq -R . | jq -s .)" \
+        '[range(0; $uuids | length) | {uuid: $uuids[.], shortId: ($sids[.] // ""), sni: $snis[.]}]')"
+    # 写入脚本配置的 .xray.clients 字段
+    SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --argjson clients "${CLIENTS_JSON:-[]}" '.xray.clients = $clients')"
     # 更新脚本配置中的规则状态
     SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --arg reset "${XRAY_RULES_STATUS,,}" ' if $reset != "n" then .xray.rules.reset = 1 else .xray.rules.reset = 0 end ')"
     # 更新脚本配置中的 block bt 状态
@@ -901,13 +933,9 @@ function handler_script_config() {
         SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --arg cdn "${CDN_DOMAIN}" '.nginx.cdn = $cdn')"
         ;;
     esac
-    # 根据配置标签更新特定字段 (第三部分)
-    case "${CONFIG_TAG,,}" in
-    xhttp | trojan | fallback | sni)
-        # 更新路径
-        SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --arg path "${XHTTP_PATH}" '.xray.path = $path')"
-        ;;
-    esac
+    # 更新路径：所有配置类型（含 tcp/Vision/mKCP）都写入脚本配置，
+    # 用户未输入时已自动生成 11-20 字符的随机路径，避免 .xray.path 为空
+    SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --arg path "${XHTTP_PATH}" '.xray.path = $path')"
     # 根据配置标签更新特定字段 (第四部分)
     case "${CONFIG_TAG,,}" in
     vision | xhttp | trojan | fallback | sni)
@@ -1053,6 +1081,26 @@ function handler_xray_config() {
         XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --argjson shortIds "${SHORT_IDS:-[]}" '.inbounds[1].streamSettings.realitySettings.shortIds = $shortIds')"
         ;;
     esac
+    # 多客户端组合：脚本配置中存在 .xray.clients 时，覆盖为多 client 配置
+    # （每个组合使用不同的 UUID/ShortId/SNI；trojan 使用密码结构，不适用多 UUID 组合）
+    local CLIENTS="$(echo "${SCRIPT_CONFIG}" | jq -c '.xray.clients // []' 2>/dev/null)"
+    local CLIENTS_COUNT="$(echo "${CLIENTS}" | jq 'length' 2>/dev/null)"
+    if [[ "${CLIENTS_COUNT:-0}" -gt 0 && "${CONFIG_TAG,,}" != 'trojan' ]]; then
+        # 依据配置类型决定 flow（vision/mkcp/fallback/sni 的 inbounds[1] 为 VLESS+Vision）
+        local multi_flow=''
+        case "${CONFIG_TAG,,}" in
+        mkcp | vision | fallback | sni) multi_flow='xtls-rprx-vision' ;;
+        esac
+        # 生成多 client 数组（email 按序号，id 取各组合 uuid）
+        local multi_clients="$(echo "${CLIENTS}" | jq --arg flow "${multi_flow}" '[to_entries[] | {email: ("vless" + ((.key + 1) | tostring) + "@xtls.reality"), id: .value.uuid, flow: $flow}]')"
+        XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --argjson clients "${multi_clients:-[]}" '.inbounds[1].settings.clients = $clients')"
+        # shortIds = 各组合 shortId 列表
+        local multi_sids="$(echo "${CLIENTS}" | jq -c '[.[].shortId]')"
+        XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --argjson sids "${multi_sids:-[]}" '.inbounds[1].streamSettings.realitySettings.shortIds = $sids')"
+        # serverNames = 各组合 sni 列表
+        local multi_snis="$(echo "${CLIENTS}" | jq -c '[.[].sni]')"
+        XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --argjson snis "${multi_snis:-[]}" '.inbounds[1].streamSettings.realitySettings.serverNames = $snis')"
+    fi
     # 根据配置标签更新特定字段 (第三部分)
     case "${CONFIG_TAG,,}" in
     xhttp | trojan)
@@ -1127,6 +1175,8 @@ function handler_read_xray_config() {
     fi
     # 读取端口
     exec_read 'port'
+    # 读取客户端组合数量（默认 6，每组使用不同 UUID/ShortId/SNI）
+    exec_read 'client-count'
     # 根据配置标签读取特定参数 (第一部分)
     case "${CONFIG_TAG,,}" in
     trojan) exec_read 'password' ;;                             # 读取 Trojan 密码
