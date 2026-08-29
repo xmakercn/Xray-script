@@ -612,6 +612,56 @@ function show_sni_config() {
 }
 
 # =============================================================================
+# 函数名称: get_multi_client_share_links
+# 功能描述: 为多客户端组合配置生成分享链接。
+#           遍历 config.json 的 .xray.clients 数组（每组包含 uuid/shortId/sni），
+#           为每个组合生成一条独立的分享链接。
+# 参数: 无
+# 返回值: 0-成功 1-无多客户端组合
+# =============================================================================
+function get_multi_client_share_links() {
+    local clients="$(echo "${SCRIPT_CONFIG}" | jq -c '.xray.clients // []' 2>/dev/null)"
+    local count="$(echo "${clients}" | jq 'length' 2>/dev/null)"
+    [[ "${count}" -gt 0 ]] || return 1
+    local -a links=()
+    local i
+    for ((i = 0; i < count; i++)); do
+        # 读取第 i 组组合的 uuid/shortId/sni
+        CLIENT_CONFIG[uuid]="$(echo "${clients}" | jq -r ".[${i}].uuid")"
+        CLIENT_CONFIG[short_id]="$(echo "${clients}" | jq -r ".[${i}].shortId")"
+        CLIENT_CONFIG[server_name]="$(echo "${clients}" | jq -r ".[${i}].sni")"
+        CLIENT_CONFIG[tag]="client_$((i + 1))"
+        # 依据配置类型生成对应的分享链接
+        case "$(echo "${SCRIPT_CONFIG}" | jq -r '.xray.tag | ascii_downcase')" in
+        mkcp) get_mkcp_share_link ;;
+        xhttp) get_xhttp_share_link ;;
+        trojan) get_trojan_share_link ;;
+        *) get_vision_share_link ;;
+        esac
+        links+=("${SHARE_LINK}#${CLIENT_CONFIG[tag]}")
+    done
+    # 使用换行拼接所有链接
+    SHARE_LINK="$(printf '%s\n' "${links[@]}")"
+    CLIENT_CONFIG[tag]="multi_clients"
+    return 0
+}
+
+# =============================================================================
+# 函数名称: show_multi_clients_config
+# 功能描述: 显示多客户端组合的分享链接（含二维码，二维码取第一条链接）。
+# 参数: 无
+# 返回值: 无 (直接打印到标准输出)
+# =============================================================================
+function show_multi_clients_config() {
+    echo -e "------------------ $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.link") ------------------"
+    echo -e "${SHARE_LINK}"
+    echo -e "------------------ $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.qr") ------------------"
+    # 二维码仅对第一条链接生成（多行文本无法整体编码）
+    echo -e "${SHARE_LINK}" | head -n 1 | qrencode -t ansiutf8
+    echo -e "------------------------------------------------------"
+}
+
+# =============================================================================
 # 函数名称: main
 # 功能描述: 脚本的主入口函数。
 #           1. 加载国际化数据。
@@ -632,6 +682,15 @@ function main() {
 
     # 获取第一个 inbound (index 1) 的通用配置
     get_common_config 1
+
+    # 多客户端组合模式：config.json 存在 .xray.clients 时，
+    # 为每个组合（不同 UUID/ShortId/SNI）生成一条分享链接
+    if [[ "$(echo "${SCRIPT_CONFIG}" | jq -r '.xray.clients // [] | length' 2>/dev/null)" -gt 0 ]]; then
+        if get_multi_client_share_links; then
+            show_multi_clients_config >&2
+            return 0
+        fi
+    fi
 
     # 根据脚本配置中的 tag (转换为小写) 选择不同的处理分支
     case "$(echo "${SCRIPT_CONFIG}" | jq -r '.xray.tag | ascii_downcase')" in
