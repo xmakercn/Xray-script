@@ -163,9 +163,19 @@ function urlencode() {
 # =============================================================================
 function cache_json_data() {
     # 读取 Xray 配置文件的完整 JSON 内容到全局变量 XRAY_CONFIG
-    XRAY_CONFIG="$(jq '.' "${XRAY_CONFIG_PATH}")"
+    if [[ -f "${XRAY_CONFIG_PATH}" ]]; then
+        XRAY_CONFIG="$(jq '.' "${XRAY_CONFIG_PATH}")"
+    else
+        echo -e "${RED}[$(echo "$I18N_DATA" | jq -r '.title.error')]${NC} Xray 配置文件不存在: ${XRAY_CONFIG_PATH}（请先完成安装/配置）" >&2
+        XRAY_CONFIG=""
+    fi
     # 读取脚本配置文件的完整 JSON 内容到全局变量 SCRIPT_CONFIG
-    SCRIPT_CONFIG="$(jq '.' "${SCRIPT_CONFIG_PATH}")"
+    if [[ -f "${SCRIPT_CONFIG_PATH}" ]]; then
+        SCRIPT_CONFIG="$(jq '.' "${SCRIPT_CONFIG_PATH}")"
+    else
+        echo -e "${RED}[$(echo "$I18N_DATA" | jq -r '.title.error')]${NC} 脚本配置文件不存在: ${SCRIPT_CONFIG_PATH}（请先运行 install.sh）" >&2
+        SCRIPT_CONFIG=""
+    fi
 }
 
 # =============================================================================
@@ -178,6 +188,9 @@ function cache_json_data() {
 # =============================================================================
 function get_common_config() {
     local inbound_index=$1 # 获取 inbound 索引参数
+    # 生成随机索引并校验为数字，避免 generate.sh 异常时 jq --argjson 收到非法 JSON
+    local random="$(bash "${GENERATE_PATH}" '--random')"
+    [[ "${random}" =~ ^[0-9]+$ ]] || random=0
 
     # 获取服务器的公网 IPv4 地址作为远程主机地址
     CLIENT_CONFIG[remote_host]="$(curl -fsSL ipv4.icanhazip.com)"
@@ -189,25 +202,25 @@ function get_common_config() {
     CLIENT_CONFIG[tag]="$(echo "${SCRIPT_CONFIG}" | jq -r ".xray.tag")"
 
     # 从 Xray 配置中获取协议类型 (如 vless, trojan)
-    CLIENT_CONFIG[protocol]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index}" '.inbounds[$i].protocol? | if . == null then empty else . end')"
+    CLIENT_CONFIG[protocol]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index:-0}" '.inbounds[$i].protocol? | if . == null then empty else . end')"
     # 从 Xray 配置中获取客户端 UUID (VLESS) 或密码 (Trojan)
-    CLIENT_CONFIG[uuid]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index}" '.inbounds[$i].settings.clients[0].id? | if . == null then empty else . end')"
+    CLIENT_CONFIG[uuid]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index:-0}" '.inbounds[$i].settings.clients[0].id? | if . == null then empty else . end')"
     # 从 Xray 配置中获取客户端密码 (Trojan)
-    CLIENT_CONFIG[password]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index}" '.inbounds[$i].settings.clients[0].password? | if . == null then empty else . end')"
+    CLIENT_CONFIG[password]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index:-0}" '.inbounds[$i].settings.clients[0].password? | if . == null then empty else . end')"
     # 从 Xray 配置中获取 mKCP 的种子 (seed)
-    CLIENT_CONFIG[seed]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index}" '.inbounds[$i].streamSettings.kcpSettings.seed? | if . == null then empty else . end')"
+    CLIENT_CONFIG[seed]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index:-0}" '.inbounds[$i].streamSettings.kcpSettings.seed? | if . == null then empty else . end')"
     # 从 Xray 配置中获取网络传输类型 (如 tcp, kcp, xhttp)
-    CLIENT_CONFIG[type]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index}" '.inbounds[$i].streamSettings.network? | if . == null then empty else . end')"
+    CLIENT_CONFIG[type]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index:-0}" '.inbounds[$i].streamSettings.network? | if . == null then empty else . end')"
     # 从 Xray 配置中获取 Flow 控制参数 (如 xtls-rprx-vision)
-    CLIENT_CONFIG[flow]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index}" '.inbounds[$i].settings.clients[0].flow? | if . == null then empty else . end')"
+    CLIENT_CONFIG[flow]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index:-0}" '.inbounds[$i].settings.clients[0].flow? | if . == null then empty else . end')"
     # 从 Xray 配置中获取安全传输类型 (如 none, tls, reality)
-    CLIENT_CONFIG[security]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index}" '.inbounds[$i].streamSettings.security? | if . == null then empty else . end')"
+    CLIENT_CONFIG[security]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index:-0}" '.inbounds[$i].streamSettings.security? | if . == null then empty else . end')"
     # 从 Xray 配置中获取 XHTTP 的路径 (path)
-    CLIENT_CONFIG[path]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index}" '.inbounds[$i].streamSettings.xhttpSettings.path? | if . == null then empty else . end')"
+    CLIENT_CONFIG[path]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index:-0}" '.inbounds[$i].streamSettings.xhttpSettings.path? | if . == null then empty else . end')"
     # 从 Xray 配置中随机获取一个 Reality 的服务器名称 (serverNames)
-    CLIENT_CONFIG[server_name]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index}" --argjson random "$(bash "${GENERATE_PATH}" '--random')" '.inbounds[$i].streamSettings.realitySettings.serverNames? | if . == null then empty else .[$random % length] end')"
+    CLIENT_CONFIG[server_name]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index:-0}" --argjson random "${random}" '.inbounds[$i].streamSettings.realitySettings.serverNames? | if (. == null or length == 0) then empty else .[$random % length] end')"
     # 从 Xray 配置中随机获取一个 Reality 的 Short ID (shortIds)
-    CLIENT_CONFIG[short_id]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index}" --argjson random "$(bash "${GENERATE_PATH}" '--random')" '.inbounds[$i].streamSettings.realitySettings.shortIds? | if . == null then empty else .[$random % length] end')"
+    CLIENT_CONFIG[short_id]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index:-0}" --argjson random "${random}" '.inbounds[$i].streamSettings.realitySettings.shortIds? | if (. == null or length == 0) then empty else .[$random % length] end')"
 }
 
 # =============================================================================
@@ -265,6 +278,9 @@ EOF
 # =============================================================================
 function get_reality_down_json() {
     local inbound_index=1 # 指定要读取的 inbound 索引 (通常为 fallback inbound)
+    # 生成随机索引并校验为数字，避免 generate.sh 异常时 jq --argjson 收到非法 JSON
+    local random="$(bash "${GENERATE_PATH}" '--random')"
+    [[ "${random}" =~ ^[0-9]+$ ]] || random=0
 
     # 从脚本配置中获取主域名作为服务器名称
     local server_name="$(echo "${SCRIPT_CONFIG}" | jq -r ".nginx.domain")"
@@ -273,7 +289,7 @@ function get_reality_down_json() {
     # 从脚本配置中获取 Xray 路径
     local sni_path="$(echo "${SCRIPT_CONFIG}" | jq -r ".xray.path")"
     # 从 Xray 配置中随机获取一个 Reality 的 Short ID
-    local short_id="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index}" --argjson random "$(bash "${GENERATE_PATH}" '--random')" '.inbounds[$i].streamSettings.realitySettings.shortIds | .[$random % length?]')"
+    local short_id="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index:-0}" --argjson random "${random}" '.inbounds[$i].streamSettings.realitySettings.shortIds | if length == 0 then empty else .[$random % length] end')"
 
     # 使用 Here Document 构造 Reality 下行设置的 JSON 字符串
     XHTTP_EXTRA=$(
@@ -421,13 +437,16 @@ function get_trojan_share_link() {
 # =============================================================================
 function get_fallback_xhttp_share_link() {
     local inbound_index=1 # 指定 fallback inbound 的索引
+    # 生成随机索引并校验为数字，避免 generate.sh 异常时 jq --argjson 收到非法 JSON
+    local random="$(bash "${GENERATE_PATH}" '--random')"
+    [[ "${random}" =~ ^[0-9]+$ ]] || random=0
 
     # 从 Xray 配置中重新读取 fallback inbound 的安全类型
-    CLIENT_CONFIG[security]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index}" '.inbounds[$i].streamSettings.security? | if . == null then empty else . end')"
+    CLIENT_CONFIG[security]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index:-0}" '.inbounds[$i].streamSettings.security? | if . == null then empty else . end')"
     # 从 Xray 配置中重新随机读取 fallback inbound 的服务器名称
-    CLIENT_CONFIG[server_name]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index}" --argjson random "$(bash "${GENERATE_PATH}" '--random')" '.inbounds[$i].streamSettings.realitySettings.serverNames | .[$random % length?]')"
+    CLIENT_CONFIG[server_name]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index:-0}" --argjson random "${random}" '.inbounds[$i].streamSettings.realitySettings.serverNames | if length == 0 then empty else .[$random % length] end')"
     # 从 Xray 配置中重新随机读取 fallback inbound 的 Short ID
-    CLIENT_CONFIG[short_id]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index}" --argjson random "$(bash "${GENERATE_PATH}" '--random')" '.inbounds[$i].streamSettings.realitySettings.shortIds | .[$random % length?]')"
+    CLIENT_CONFIG[short_id]="$(echo "${XRAY_CONFIG}" | jq -r --argjson i "${inbound_index:-0}" --argjson random "${random}" '.inbounds[$i].streamSettings.realitySettings.shortIds | if length == 0 then empty else .[$random % length] end')"
 
     # 调用通用的 XHTTP 链接生成函数
     get_xhttp_share_link

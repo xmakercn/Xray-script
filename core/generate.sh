@@ -50,7 +50,11 @@ function generate_random() {
     local custom_max=${2} # 获取第二个参数作为自定义最大值
 
     # 使用 /dev/urandom 生成一个无符号32位随机整数
-    local random=$(od -An -N4 -tu4 </dev/urandom)
+    local random=$(od -An -N4 -tu4 </dev/urandom 2>/dev/null | tr -d '[:space:]')
+    # 校验: od 不可用或输出非数字时，回退使用 $RANDOM，避免上游 jq --argjson 收到非法 JSON
+    if [[ ! "${random}" =~ ^[0-9]+$ ]]; then
+        random="${RANDOM}"
+    fi
 
     # 检查自定义的最小值和最大值是否为有效正整数，并且最小值小于最大值
     if [[ ${custom_min} =~ ^[0-9]+$ && ${custom_max} =~ ^[0-9]+$ ]] && ((custom_min < custom_max)); then
@@ -140,7 +144,8 @@ function generate_target() {
 
     # 使用 jq 读取配置文件，获取 .target 对象的所有键名(keys)，
     # 然后计算随机索引对键名数组长度取模，从而随机选择一个键名
-    jq -r --argjson random "${random}" '.target | keys | .[$random % length?]' "${SCRIPT_CONFIG_PATH}"
+    # 兼容 config.json 缺失 .target 键的情况（旧版配置升级时常见），keys 为空时输出空而非报错
+    jq -r --argjson random "${random}" '(.target // {}) | keys as $k | if ($k | length) > 0 then $k[$random % ($k | length)] else empty end' "${SCRIPT_CONFIG_PATH}"
 }
 
 # =============================================================================
@@ -161,19 +166,26 @@ function generate_server_names() {
     # 如果 .target 对象中已存在 $key (即 $target)，
     # 则返回原配置；
     # 否则，将新的键值对 ($target: [$target]) 添加到 .target 对象中
+    # (.target // {}) 兼容 config.json 缺失 .target 键的情况（旧版配置升级时常见）
     local SCRIPT_CONFIG=$(jq --arg key "${target}" '
-    if .target | has($key) then
+    if (.target // {}) | has($key) then
         .
     else
         .target += { ($key): [$key] }
     end
     ' "${SCRIPT_CONFIG_PATH}")
 
+    # config.json 缺失或损坏导致读取失败时，回退为仅包含 target 自身的数组，避免输出为空
+    if [[ -z "${SCRIPT_CONFIG}" ]]; then
+        echo "[$(printf '%s' "${target}" | jq -R .)]"
+        return
+    fi
+
     # 将修改后的配置内容写回配置文件
     echo "${SCRIPT_CONFIG}" >"${SCRIPT_CONFIG_PATH}" && sleep 2
 
     # 从修改后的配置中提取并输出指定 target 的服务器名称列表
-    echo "${SCRIPT_CONFIG}" | jq --arg key "${target}" '.target[$key]'
+    echo "${SCRIPT_CONFIG}" | jq --arg key "${target}" '.target[$key] // [$key]'
 }
 
 # =============================================================================

@@ -240,6 +240,10 @@ function processes_xray_config() {
     6) XTLS_CONFIG='SNI' ;;      # 选择 6 对应 SNI
     *) XTLS_CONFIG='Vision' ;;   # 其他情况 (包括 2 和默认) 对应 Vision
     esac
+    # 将用户选择的配置类型立即写入 config.json 的 .xray.tag，
+    # 避免后续 --script-config 流程中断（用户输入校验失败/模板缺失等）导致选择丢失
+    SCRIPT_CONFIG="$(jq --arg tag "${XTLS_CONFIG}" '.xray.tag = $tag' "${SCRIPT_CONFIG_PATH}")"
+    echo "${SCRIPT_CONFIG}" >"${SCRIPT_CONFIG_PATH}" && sleep 2
     # 如果选择了 SNI 配置
     if [[ "${XTLS_CONFIG}" == 'SNI' ]]; then
         processes_ca_vendor 'init'

@@ -68,7 +68,8 @@ readonly ACME_PATH="${HOME}/.acme.sh/acme.sh"                  # ACME.sh 脚本�
 
 # --- 全局变量声明 ---
 # 声明用于存储配置数据和国际化数据的全局变量
-declare SCRIPT_CONFIG="$(jq '.' "${SCRIPT_CONFIG_PATH}")" # 存储从 config.json 读取的脚本配置
+# 脚本解析期读取 config.json；若此时文件缺失/损坏则为空，由 main() 兜底重载并校验
+declare SCRIPT_CONFIG="$(jq '.' "${SCRIPT_CONFIG_PATH}" 2>/dev/null)" # 存储从 config.json 读取的脚本配置
 declare XRAY_CONFIG=""                                    # 存储 Xray 配置 (通常在运行时加载)
 declare LANG_PARAM=''                                     # (未在脚本中实际使用，可能是预留)
 declare I18N_DATA=''                                      # 存储从 i18n JSON 文件中读取的全部数据
@@ -334,7 +335,7 @@ function reset_json_fields() {
     # 将保留字段名数组转换为 jq 可用的 JSON 数组
     local jq_keep=$(printf '%s\n' "${keep_fields[@]}" | jq -R . | jq -s .)
     # 使用 jq 脚本进行重置操作
-    raw_json=$(echo "${raw_json}" | jq --arg key "${target_key}" --argjson keep "$jq_keep" '
+    raw_json=$(echo "${raw_json}" | jq --arg key "${target_key}" --argjson keep "${jq_keep:-[]}" '
         # 定义递归函数 clear_recursive，用于清空值
         def clear_recursive:
             if type == "object" then with_entries(.value |= clear_recursive)
@@ -592,7 +593,7 @@ function rollback_stream_config_backup() {
 
 function get_custom_site_json_by_index() {
     local site_index="$1"
-    echo "${SCRIPT_CONFIG}" | jq -c --argjson idx "$((site_index - 1))" '.nginx.custom_sites // [] | .[$idx]'
+    echo "${SCRIPT_CONFIG}" | jq -c --argjson idx "$(( ${site_index:-1} - 1 ))" '.nginx.custom_sites // [] | .[$idx]'
 }
 
 # =============================================================================
@@ -629,11 +630,11 @@ function add_rule() {
         # 如果是 domain 规则
         if [[ "${domain_or_ip}" == "domain" ]]; then
             # 将新值追加到现有 domain 数组并去重
-            XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --arg ruleTag "${rule_tag}" --argjson value "${value}" '.routing.rules |= map(if .ruleTag == $ruleTag then .domain += $value | .domain |= unique else . end)')"
+            XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --arg ruleTag "${rule_tag}" --argjson value "${value:-[]}" '.routing.rules |= map(if .ruleTag == $ruleTag then .domain += $value | .domain |= unique else . end)')"
         # 如果是 ip 规则
         elif [[ "${domain_or_ip}" == "ip" ]]; then
             # 将新值追加到现有 ip 数组并去重
-            XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --arg ruleTag "${rule_tag}" --argjson value "${value}" '.routing.rules |= map(if .ruleTag == $ruleTag then .ip += $value | .ip |= unique else . end)')"
+            XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --arg ruleTag "${rule_tag}" --argjson value "${value:-[]}" '.routing.rules |= map(if .ruleTag == $ruleTag then .ip += $value | .ip |= unique else . end)')"
         fi
     else
         # 规则不存在，创建新的规则 JSON 对象
@@ -648,27 +649,27 @@ function add_rule() {
                 # 根据 position 参数决定插入位置
                 if [[ "${position}" == "before" ]]; then
                     # 插入到 target_tag 规则之前
-                    XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --argjson target_index "${target_index}" --argjson new_rule "${new_rule}" '.routing.rules |= .[:$target_index] + $new_rule + .[$target_index:]')"
+                    XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --argjson target_index "${target_index:-0}" --argjson new_rule "${new_rule:-[]}" '.routing.rules |= .[:$target_index] + $new_rule + .[$target_index:]')"
                 elif [[ "${position}" == "after" ]]; then
                     # 插入到 target_tag 规则之后
-                    XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --argjson target_index $((target_index + 1)) --argjson new_rule "${new_rule}" '.routing.rules |= .[:$target_index] + $new_rule + .[$target_index:]')"
+                    XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --argjson target_index $(( ${target_index:-0} + 1 )) --argjson new_rule "${new_rule:-[]}" '.routing.rules |= .[:$target_index] + $new_rule + .[$target_index:]')"
                 else
                     # 默认追加到末尾
-                    XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --argjson new_rule "${new_rule}" '.routing.rules += $new_rule')"
+                    XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --argjson new_rule "${new_rule:-[]}" '.routing.rules += $new_rule')"
                 fi
             else
                 # target_tag 规则不存在，追加到末尾
-                XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --argjson new_rule "${new_rule}" '.routing.rules += $new_rule')"
+                XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --argjson new_rule "${new_rule:-[]}" '.routing.rules += $new_rule')"
             fi
         else
             # 未指定 target_tag
             # 如果指定了数字位置
             if [[ -n "${position}" && "${position}" -ge 0 ]]; then
                 # 插入到指定索引位置
-                XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --argjson position "${position}" --argjson new_rule "${new_rule}" '.routing.rules |= .[:$position] + $new_rule + .[$position:]')"
+                XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --argjson position "${position:-0}" --argjson new_rule "${new_rule:-[]}" '.routing.rules |= .[:$position] + $new_rule + .[$position:]')"
             else
                 # 默认追加到末尾
-                XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --argjson new_rule "${new_rule}" '.routing.rules += $new_rule')"
+                XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --argjson new_rule "${new_rule:-[]}" '.routing.rules += $new_rule')"
             fi
         fi
     fi
@@ -827,6 +828,10 @@ function handler_script_config() {
     # 从 CONFIG_DATA 或生成器获取配置值
     # 获取配置标签
     local CONFIG_TAG="${1:-${CONFIG_DATA['tag']}}"
+    # 兜底：参数与 CONFIG_DATA 均为空时，从 config.json 读取已保存的配置类型
+    if [[ -z "${CONFIG_TAG}" ]]; then
+        CONFIG_TAG="$(echo "${SCRIPT_CONFIG}" | jq -r '.xray.tag')"
+    fi
     # 获取规则状态
     local XRAY_RULES_STATUS="${CONFIG_DATA['rules']}"
     # 获取 block bt 状态
@@ -908,13 +913,13 @@ function handler_script_config() {
     vision | xhttp | trojan | fallback | sni)
         # 更新目标域名、服务器名称和 Short IDs
         SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --arg target "${TARGET_DOMAIN}" '.xray.target = $target')"
-        SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --argjson serverNames "${SERVER_NAMES}" '.xray.serverNames = $serverNames')"
-        SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --argjson shortIds "${SHORT_IDS}" '.xray.shortIds = $shortIds')"
+        SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --argjson serverNames "${SERVER_NAMES:-[]}" '.xray.serverNames = $serverNames')"
+        SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --argjson shortIds "${SHORT_IDS:-[]}" '.xray.shortIds = $shortIds')"
         ;;
     esac
     # 更新配置标签和端口
     SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --arg tag "${CONFIG_TAG}" '.xray.tag = $tag')"
-    SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --argjson port "${XRAY_PORT}" '.xray.port = $port')"
+    SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --argjson port "${XRAY_PORT:-443}" '.xray.port = $port')"
     # 将更新后的脚本配置写入文件
     echo "${SCRIPT_CONFIG}" >"${SCRIPT_CONFIG_PATH}" && sleep 2
 }
@@ -967,6 +972,34 @@ function handler_xray_config() {
     echo -e "${GREEN}[$(echo "$I18N_DATA" | jq -r '.title.config')]${NC} $(echo "$I18N_DATA" | jq -r ".${CUR_FILE}.xray.config_update")" >&2
     # 从脚本配置中读取各项参数
     local CONFIG_TAG="$(echo "${SCRIPT_CONFIG}" | jq -r '.xray.tag')"                # 获取配置标签
+    # 配置标签为空（未完成安装/未选择协议配置）时，
+    # 弹出协议配置菜单让用户选择（直接回车默认 Vision），
+    # 避免继续拼接出 ${SCRIPT_XRAY_DIR}/.json 路径导致 jq 报错
+    if [[ -z "${CONFIG_TAG}" ]]; then
+        echo -e "${YELLOW}[$(echo "$I18N_DATA" | jq -r '.title.tip')]${NC} 尚未设置 Xray 配置类型，请选择:" >&2
+        bash "${CUR_DIR}/menu.sh" '--config'
+        case $? in
+        1) CONFIG_TAG='mKCP' ;;
+        3) CONFIG_TAG='XHTTP' ;;
+        4) CONFIG_TAG='Trojan' ;;
+        5) CONFIG_TAG='Fallback' ;;
+        6) CONFIG_TAG='SNI' ;;
+        *) CONFIG_TAG='Vision' ;; # 默认（含选项 2）
+        esac
+        # 将选择写入脚本配置
+        SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --arg tag "${CONFIG_TAG}" '.xray.tag = $tag')"
+        echo "${SCRIPT_CONFIG}" >"${SCRIPT_CONFIG_PATH}" && sleep 2
+        echo -e "${GREEN}[$(echo "$I18N_DATA" | jq -r '.title.info')]${NC} 已选择配置类型: ${CONFIG_TAG}" >&2
+        # 若未执行过 --script-config（config.json 中 uuid 等核心值为空），
+        # 自动调用 handler_script_config 补齐 uuid/serverNames/shortIds/port 等配置值，
+        # 避免生成的 Xray 配置与分享链接出现空字段
+        if [[ "$(echo "${SCRIPT_CONFIG}" | jq -r '.xray.uuid' 2>/dev/null)" == "" ]]; then
+            handler_script_config "${CONFIG_TAG}"
+            # 重新从文件加载配置并刷新 CONFIG_TAG
+            SCRIPT_CONFIG="$(jq '.' "${SCRIPT_CONFIG_PATH}")"
+            CONFIG_TAG="$(echo "${SCRIPT_CONFIG}" | jq -r '.xray.tag')"
+        fi
+    fi
     local XRAY_PORT="$(echo "${SCRIPT_CONFIG}" | jq -r '.xray.port')"                # 获取端口
     local XRAY_UUID="$(echo "${SCRIPT_CONFIG}" | jq -r '.xray.uuid')"                # 获取 UUID
     local FALLBACK_UUID="$(echo "${SCRIPT_CONFIG}" | jq -r '.xray.fallback')"        # 获取 Fallback UUID
@@ -984,10 +1017,13 @@ function handler_xray_config() {
     local XRAY_RULES="$(echo "${SCRIPT_CONFIG}" | jq -r '.rules')"                   # 获取路由规则
     local WARP_STATUS="$(echo "${SCRIPT_CONFIG}" | jq -r '.xray.warp')"              # 获取 WARP 状态
     # 加载对应配置标签的 Xray 配置模板
-    XRAY_CONFIG="$(jq '.' ${SCRIPT_XRAY_DIR}/${CONFIG_TAG}.json)"
+    if [[ ! -f "${SCRIPT_XRAY_DIR}/${CONFIG_TAG}.json" ]]; then
+        _error "Xray 配置模板不存在: ${SCRIPT_XRAY_DIR}/${CONFIG_TAG}.json"
+    fi
+    XRAY_CONFIG="$(jq '.' "${SCRIPT_XRAY_DIR}/${CONFIG_TAG}.json")"
     # 如果配置标签不是 sni，则更新端口
     if [[ "${CONFIG_TAG,,}" != 'sni' ]]; then
-        XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --argjson port "${XRAY_PORT}" '.inbounds[1].port = $port')"
+        XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --argjson port "${XRAY_PORT:-443}" '.inbounds[1].port = $port')"
     fi
     # 根据配置标签更新特定字段 (第一部分)
     case "${CONFIG_TAG,,}" in
@@ -1012,9 +1048,9 @@ function handler_xray_config() {
             XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --arg target "${TARGET_DOMAIN}:443" '.inbounds[1].streamSettings.realitySettings.target = $target')"
         fi
         # 更新 Reality 服务器名称、私钥和 Short IDs
-        XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --argjson serverNames "${SERVER_NAMES}" '.inbounds[1].streamSettings.realitySettings.serverNames = $serverNames')"
+        XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --argjson serverNames "${SERVER_NAMES:-[]}" '.inbounds[1].streamSettings.realitySettings.serverNames = $serverNames')"
         XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --arg privateKey "${PRIVATE_KEY}" '.inbounds[1].streamSettings.realitySettings.privateKey = $privateKey')"
-        XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --argjson shortIds "${SHORT_IDS}" '.inbounds[1].streamSettings.realitySettings.shortIds = $shortIds')"
+        XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --argjson shortIds "${SHORT_IDS:-[]}" '.inbounds[1].streamSettings.realitySettings.shortIds = $shortIds')"
         ;;
     esac
     # 根据配置标签更新特定字段 (第三部分)
@@ -1033,7 +1069,7 @@ function handler_xray_config() {
     case "${XRAY_RULES_STATUS}" in
     0)
         # 保留当前路由规则
-        XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --argjson rules "${XRAY_RULES}" '.routing.rules = $rules')"
+        XRAY_CONFIG="$(echo "${XRAY_CONFIG}" | jq --argjson rules "${XRAY_RULES:-[]}" '.routing.rules = $rules')"
         ;;
     1)
         # 重置并添加默认路由规则
@@ -1049,12 +1085,12 @@ function handler_xray_config() {
         # 构造 WARP Socks 出站配置 JSON
         local socks_config='[{"tag":"warp","protocol":"socks","settings":{"servers":[{"address":"'"${container_ip}"'","port":40001}]}}]'
         # 将 WARP 出站配置添加到 Xray 配置中
-        XRAY_CONFIG=$(echo "${XRAY_CONFIG}" | jq --argjson socks_config "${socks_config}" '.outbounds += $socks_config')
+        XRAY_CONFIG=$(echo "${XRAY_CONFIG}" | jq --argjson socks_config "${socks_config:-[]}" '.outbounds += $socks_config')
     fi
     # 获取更新后的路由规则
     XRAY_RULES="$(echo "${XRAY_CONFIG}" | jq '.routing.rules')"
     # 更新脚本配置中的路由规则
-    SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --argjson rules "${XRAY_RULES}" '.rules = $rules')"
+    SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --argjson rules "${XRAY_RULES:-[]}" '.rules = $rules')"
     # 将更新后的脚本配置和 Xray 配置写入文件
     echo "${SCRIPT_CONFIG}" >"${SCRIPT_CONFIG_PATH}" && sleep 2
     echo "${XRAY_CONFIG}" >"${XRAY_CONFIG_PATH}" && sleep 2
@@ -1075,7 +1111,7 @@ function handler_read_xray_config() {
     local CONFIG_TAG="${1}" # 获取配置标签
     # 验证配置标签的有效性，无效则退出
     if ! exec_check '--tag' "${CONFIG_TAG}"; then
-        exit 1
+        _error "Xray 配置模板缺失: ${SCRIPT_XRAY_DIR}/${CONFIG_TAG}.json（项目文件不完整，请重新安装脚本）"
     fi
     # 将配置标签存储到 CONFIG_DATA
     CONFIG_DATA['tag']="${CONFIG_TAG}"
@@ -1191,7 +1227,7 @@ function handler_custom_site_add() {
         --arg domain "${domain}" \
         --arg scheme "${scheme}" \
         --arg host "${host}" \
-        --argjson port "${port}" \
+        --argjson port "${port:-443}" \
         '.nginx.custom_sites = ((.nginx.custom_sites // []) + [{"domain": $domain, "scheme": $scheme, "host": $host, "port": $port}])')"
 
     conf_path="${NGINX_CONFIG_DIR}/sites-available/${domain}.conf"
@@ -1266,11 +1302,11 @@ function handler_custom_site_update() {
     IFS=$'\t' read -r new_scheme new_host new_port <<<"$(parse_proxy_target "${new_proxy_target}")" || _error "failed to parse proxy target"
 
     updated_script_config="$(echo "${SCRIPT_CONFIG}" | jq \
-        --argjson idx "$((site_index - 1))" \
+        --argjson idx "$(( ${site_index:-1} - 1 ))" \
         --arg domain "${new_domain}" \
         --arg scheme "${new_scheme}" \
         --arg host "${new_host}" \
-        --argjson port "${new_port}" \
+        --argjson port "${new_port:-443}" \
         '.nginx.custom_sites[$idx] = {"domain": $domain, "scheme": $scheme, "host": $host, "port": $port}')"
 
     old_conf_path="${NGINX_CONFIG_DIR}/sites-available/${old_domain}.conf"
@@ -1358,7 +1394,7 @@ function handler_custom_site_delete() {
     link_path="${NGINX_CONFIG_DIR}/sites-enabled/${domain}.conf"
     conf_backup="${SCRIPT_CONFIG_DIR}/${domain}.custom-site.bak.conf"
 
-    updated_script_config="$(echo "${SCRIPT_CONFIG}" | jq --argjson idx "$((site_index - 1))" 'del(.nginx.custom_sites[$idx])')"
+    updated_script_config="$(echo "${SCRIPT_CONFIG}" | jq --argjson idx "$(( ${site_index:-1} - 1 ))" 'del(.nginx.custom_sites[$idx])')"
     [[ -f "${conf_path}" ]] && cp -f "${conf_path}" "${conf_backup}"
     [[ -f "${NGINX_CONFIG_DIR}/modules-enabled/stream.conf" ]] && cp -f "${NGINX_CONFIG_DIR}/modules-enabled/stream.conf" "${stream_backup}"
 
@@ -1451,7 +1487,7 @@ function handler_change_xray_port() {
     esac
 
     # 更新脚本配置中的 Xray 端口
-    SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --argjson port "${XRAY_PORT}" '.xray.port = $port')"
+    SCRIPT_CONFIG="$(echo "${SCRIPT_CONFIG}" | jq --argjson port "${XRAY_PORT:-443}" '.xray.port = $port')"
     # 将更新后的脚本配置写入文件
     echo "${SCRIPT_CONFIG}" >"${SCRIPT_CONFIG_PATH}" && sleep 2
 }
@@ -1477,10 +1513,20 @@ function handler_install() {
         # 否则从脚本配置中读取版本
         CONFIG_DATA['version']="$(echo "${SCRIPT_CONFIG}" | jq -r '.xray.version')"
     fi
+    # 版本为空（config.json 默认空值，或 GitHub API 请求失败）时，获取最新稳定版
+    # 避免 --version "" 触发 Xray-install 报 "Please specify the correct version."
+    if [[ -z "${CONFIG_DATA['version']}" ]]; then
+        CONFIG_DATA['version']="$(curl -fsSL --max-time 20 https://api.github.com/repos/XTLS/Xray-core/releases/latest 2>/dev/null | jq -r '.tag_name' 2>/dev/null)"
+    fi
     # 检查 Xray 命令是否存在，或是否强制安装
     if ! cmd_exists 'xray' || [[ "${force_install}" != n ]]; then
-        # 调用 Xray-install 脚本进行安装
-        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root --version "${CONFIG_DATA['version']}"
+        if [[ -n "${CONFIG_DATA['version']}" ]]; then
+            # 调用 Xray-install 脚本安装指定版本
+            bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root --version "${CONFIG_DATA['version']}"
+        else
+            # 版本仍无法确定（网络异常等）时，不指定版本，由官方脚本安装默认最新版
+            bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root
+        fi
     fi
 }
 
@@ -1662,7 +1708,7 @@ function handler_warp() {
         # 构造 WARP Socks 出站配置 JSON
         local socks_config='[{"tag":"warp","protocol":"socks","settings":{"servers":[{"address":"'"${container_ip}"'","port":40001}]}}]'
         # 将 WARP 出站配置添加到 Xray 配置中
-        XRAY_CONFIG=$(echo "${XRAY_CONFIG}" | jq --argjson socks_config "${socks_config}" '.outbounds += $socks_config')
+        XRAY_CONFIG=$(echo "${XRAY_CONFIG}" | jq --argjson socks_config "${socks_config:-[]}" '.outbounds += $socks_config')
     fi
     # 更新脚本配置中的 WARP 状态
     SCRIPT_CONFIG=$(echo "${SCRIPT_CONFIG}" | jq --arg warp "${WARP_STATUS}" '.xray.warp = $warp')
@@ -2142,6 +2188,16 @@ function handler_quick_install() {
 function main() {
     # 加载国际化数据
     load_i18n
+
+    # 确保 SCRIPT_CONFIG 有效：
+    # 脚本解析期 config.json 可能缺失/损坏导致 SCRIPT_CONFIG 为空，
+    # 若为空则重新加载；仍无效则明确报错，避免后续把空配置写回文件破坏配置
+    if [[ -z "${SCRIPT_CONFIG}" ]]; then
+        SCRIPT_CONFIG="$(jq '.' "${SCRIPT_CONFIG_PATH}" 2>/dev/null)"
+        if [[ -z "${SCRIPT_CONFIG}" ]]; then
+            _error "脚本配置文件无效或不存在: ${SCRIPT_CONFIG_PATH}（请先运行 install.sh 初始化，或删除该文件后重装）"
+        fi
+    fi
 
     local option="$1" # 获取第一个参数作为操作选项
     shift             # 移除第一个参数，剩下的参数留给具体函数处理
